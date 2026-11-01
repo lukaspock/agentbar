@@ -1,0 +1,7 @@
+.build/
+DerivedData/
+*.xcodeproj/
+.swiftpm/
+.DS_Store
+# full-screen captures may contain unrelated desktop content
+App/Screenshots/hover-*
