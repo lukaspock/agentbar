@@ -78,3 +78,29 @@ Do not move the mouse unless needed; no controlling other apps; no system change
 - DEBUG only: `--auto-answer <optionId>` answers each pending request 2 s after it appeared.
 - Removing agents: `ResponseSink.remove(sessionId:)` (store: cancels pending with `.cancelled`, drops session; idempotent). UI: xmark per row
   (hover, always visible for done/idle/error; working/pending needs a second click "Wirklich?" within 3 s) and footer "Erledigte entfernen".
+
+## Approval display + click safety (security correction, core)
+**Approval text** (`ClaudeCodeAdapter.renderApproval`, plain text, shown monospaced/scrollable by the UI):
+```
+Allow <Tool>? Project: <name>
+cwd: <cwd>                       (only if present)
+<key>: <value>                   one entry per top-level key of tool_input, keys sorted
+  <continuation line>            further lines of a value are indented by 2 spaces
+```
+- Values: strings as is; numbers/bools/null/nested objects as compact JSON (sorted keys, no escaped slashes). Empty value => `(leer)`.
+- Sanitizing: CR/LF/U+2028/2029/NEL are line breaks (max 2 in a row); tabs become spaces; control, format (zero-width, bidi, tag), private-use,
+  unassigned, surrogate, variation selectors, CGJ, Hangul fillers, braille blank become a visible U+FFFD; other space separators become " ".
+  The indentation makes it impossible for a value to forge a `key:` line. Header fields (tool, project, cwd) are single line.
+- **Truncation rule: never cut, never summarise.** If the full text would exceed `ClaudeCodeAdapter.maxApprovalText` (= 4000 - 100, measured in
+  Characters AND unicode scalars), or a key is empty/longer than 60, the tool name is empty/longer than 60, or `tool_input` is missing/empty/not an
+  object, then NO request is created. `translate` returns only `sessionUpdate(state: needsInput, action: "<tool>: <reason> … [gekürzt, im Terminal prüfen]")`
+  plus a status log entry; the transport answers the hook with `{"ok":true,"output":""}` (empty), so Claude Code shows its own dialog.
+  The store cap (4000) therefore never shortens an approval text (tested).
+- Option ids unchanged: `allow` / `deny` / `always`. Timeout/cancel/unknown => empty output.
+
+**Click guard (UI contract)**
+- `RequestOrdering.stable(_:)`: oldest request first (ties by requestId); session state never influences the order. New requests appear at the bottom.
+- `ApprovalClickGuard` (value type, UI owns one instance): `observe(order:now:)` on every change of the ordered request ids (new or moved card
+  restarts its 0.5 s window), `layoutChanged(now:)` on panel height/expansion changes (disarms all cards for 0.5 s),
+  `isArmed(requestId, currentOrder:, now:)` called at click time with the CURRENT order; false for unknown cards, cards whose index changed, or inside
+  `settleInterval` (0.5 s). Buttons are disabled/dimmed while not armed. The answer must use the requestId of the drawn card, never "first pending".

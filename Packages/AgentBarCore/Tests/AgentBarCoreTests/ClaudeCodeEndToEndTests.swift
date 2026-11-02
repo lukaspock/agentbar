@@ -130,6 +130,27 @@ final class ClaudeCodeEndToEndTests: XCTestCase {
         XCTAssertEqual(rc, 0); XCTAssertEqual(out, "", "timeout must produce empty output (Claude's own dialog)")
     }
 
+    /// Truncated / unrenderable input: the hook answer must be EMPTY (Claude's own dialog), no request is created,
+    /// the session only flags attention. Must never be an allow.
+    func testTruncatedInputGivesEmptyHookOutputAndNoRequest() async throws {
+        try XCTSkipIf(cliURL == nil, "agentbar binary not built next to the test bundle")
+        let r = startResponder(policy: "allow")   // would allow anything that is offered
+        defer { r.cancel() }
+        let long = ["command": String(repeating: "echo safe; ", count: 600) + "rm -rf ~"]
+        for input in [long as Any, [String: Any]()] {
+            let (rc, out, _) = await hook(fixture(["tool_name": "Bash", "tool_input": input]))
+            XCTAssertEqual(rc, 0); XCTAssertEqual(out, "", "no decision for non-displayable input")
+            let s = try XCTUnwrap(store.sessions.first { $0.id == "e2e-1" })
+            XCTAssertTrue(s.pendingRequests.isEmpty)
+            XCTAssertEqual(s.state, .needsInput)
+            XCTAssertTrue(s.currentAction?.contains("gekürzt, im Terminal prüfen") ?? false)
+            XCTAssertFalse(s.history.contains { $0.kind == .request })
+        }
+        // sanity: a displayable input is still answered
+        let (_, ok, _) = await hook(fixture())
+        XCTAssertNotNil(decision(ok))
+    }
+
     func testNonBlockingEventsReturnEmptyAndUpdateStore() async throws {
         try XCTSkipIf(cliURL == nil, "agentbar binary not built next to the test bundle")
         let (rc, out, _) = await hook(fixture(["hook_event_name": "PreToolUse", "tool_name": "Bash",

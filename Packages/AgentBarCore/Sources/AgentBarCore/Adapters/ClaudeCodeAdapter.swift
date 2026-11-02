@@ -73,14 +73,25 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
             let last = Self.clean(obj["last_assistant_message"] as? String, max: 200) ?? "Subagent finished"
             return [.log(sessionId: sid, entry: HistoryEntry(kind: .status, text: "Subagent: \(last)"))]
         default: // PermissionRequest
-            return [permissionAsk(obj, sid: sid, name: name)]
+            return permissionAsk(obj, sid: sid, name: name) { update($0, action: $1) }
         }
     }
 
-    private func permissionAsk(_ obj: [String: Any], sid: String, name: String) -> CoreEvent {
-        let tool = Self.clean(obj["tool_name"] as? String, max: 60) ?? "a tool"
-        let summary = Self.summarize(tool: tool, input: obj["tool_input"])
-        let text = summary.isEmpty ? "Allow \(tool)?" : "Allow \(tool)? \(summary)"
+    /// Max characters of an approval text. Stays below `AgentBarLimits.maxTextLength` so the store never cuts it.
+    public static let maxApprovalText = AgentBarLimits.maxTextLength - 100
+    public static let truncationMarker = "… [gekürzt, im Terminal prüfen]"
+
+    private func permissionAsk(_ obj: [String: Any], sid: String, name: String, update: (SessionState?, String?) -> CoreEvent) -> [CoreEvent] {
+        let rendered = Self.renderApproval(tool: obj["tool_name"] as? String, cwd: obj["cwd"] as? String,
+                                           project: name, input: obj["tool_input"])
+        guard let text = rendered.text else {
+            // The input cannot be shown in full (too long / nothing renderable): never offer one-click Allow.
+            // Empty hook output => Claude Code shows its own dialog; the bar only flags that attention is needed.
+            let tool = Self.clean(obj["tool_name"] as? String, max: 60) ?? "tool"
+            let msg = "\(tool): \(rendered.reason) \(Self.truncationMarker)"
+            return [.sessionUpdate(id: sid, name: name, kind: .claudeCode, state: .needsInput, action: msg, supportsStop: nil),
+                    .log(sessionId: sid, entry: HistoryEntry(kind: .status, text: msg))]
+        }
         let suggestions = (obj["permission_suggestions"] as? [Any]) ?? []
         var chosen: Data?
         if !suggestions.isEmpty {
@@ -95,7 +106,90 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         remember(rid, Pending(suggestion: chosen))
         let req = AgentRequest(requestId: rid, type: .approval, text: text, options: options,
                                timeoutSeconds: Self.approvalTimeoutSeconds, defaultOptionId: nil)
-        return .ask(sessionId: sid, request: req)
+        // name-only update first, so the card shows the project name instead of the raw session id
+        return [update(nil, nil), .ask(sessionId: sid, request: req)]
+    }
+
+    /// Plain-text approval body: header line (tool, project), `cwd:` line, then one `key: value` entry per top-level
+    /// key of `tool_input` (sorted). Continuation lines of a value are indented so a value can not forge a key line.
+    /// Returns `text == nil` when it does not fit `maxApprovalText` or nothing can be rendered.
+    static func renderApproval(tool: String?, cwd: String?, project: String, input: Any?)
+        -> (text: String?, reason: String) {
+        let limit = maxApprovalText
+        let toolRaw = singleLine(tool ?? "")
+        guard !toolRaw.isEmpty else { return (nil, "unbekanntes Tool") }
+        guard toolRaw.count <= 60 else { return (nil, "Toolname zu lang") }
+        guard let dict = input as? [String: Any], !dict.isEmpty else { return (nil, "keine Parameter darstellbar") }
+        var lines = ["Allow \(toolRaw)? Project: \(singleLine(project))"]
+        if let cwd, !singleLine(cwd).isEmpty { lines.append("cwd: \(singleLine(cwd))") }
+        // Counted in Characters (what the store caps) AND in unicode scalars (a single grapheme can carry thousands).
+        func size(_ str: String) -> Int { max(str.count, str.unicodeScalars.count) }
+        var total = size(lines.joined(separator: "\n"))
+        for key in dict.keys.sorted() {
+            let k = singleLine(key)
+            guard !k.isEmpty, k.count <= 60 else { return (nil, "Parametername nicht darstellbar") }
+            var v = multiLine(valueString(dict[key]))
+            if v.isEmpty { v = "(leer)" }
+            let entry = "\(k): " + v.replacingOccurrences(of: "\n", with: "\n  ")
+            total += size(entry) + 1
+            if total > limit { return (nil, "Eingabe zu lang") }
+            lines.append(entry)
+        }
+        return (lines.joined(separator: "\n"), "")
+    }
+
+    private static func valueString(_ v: Any?) -> String {
+        switch v {
+        case let s as String: return s
+        case nil, is NSNull: return "null"
+        case let x?:
+            if JSONSerialization.isValidJSONObject(x) || x is NSNumber,
+               let d = try? JSONSerialization.data(withJSONObject: x, options: [.sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed]) {
+                return String(decoding: d, as: UTF8.self)
+            }
+            return String(describing: x)
+        }
+    }
+
+    /// Keeps newlines (max two in a row), turns other control/format characters (ESC, NUL, bidi overrides, ...)
+    /// into a visible U+FFFD, tabs into spaces. Never caps: callers decide what to do with long text.
+    static func multiLine(_ s: String) -> String {
+        var out = String.UnicodeScalarView()
+        var newlines = 0
+        var prevCR = false
+        for u in s.unicodeScalars {
+            let cat = u.properties.generalCategory
+            defer { prevCR = (u == "\r") }
+            if u == "\n" || u == "\r" || cat == .lineSeparator || cat == .paragraphSeparator || u.value == 0x85 {
+                if u == "\n", prevCR { continue }
+                newlines += 1
+                if newlines <= 2 { out.append("\n") }
+                continue
+            }
+            newlines = 0
+            if u == "\t" { out.append(" "); continue }
+            if isHidden(u, cat) { out.append("\u{FFFD}"); continue }
+            if cat == .spaceSeparator, u != " " { out.append(" "); continue }
+            out.append(u)
+        }
+        return String(out).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Invisible or deceptive scalars: controls, format (zero-width, bidi, tags), private use, unassigned, surrogates,
+    /// variation selectors, combining grapheme joiner and blank-looking letters (Hangul fillers, braille blank).
+    static func isHidden(_ u: Unicode.Scalar, _ cat: Unicode.GeneralCategory) -> Bool {
+        switch cat {
+        case .control, .format, .privateUse, .unassigned, .surrogate: return true
+        default: break
+        }
+        switch u.value {
+        case 0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x2800, 0x3164, 0xFFA0, 0xFE00...0xFE0F, 0xE0100...0xE01EF: return true
+        default: return false
+        }
+    }
+
+    static func singleLine(_ s: String) -> String {
+        multiLine(s).replacingOccurrences(of: "\n", with: " ")
     }
 
     private func remember(_ id: String, _ p: Pending) {
@@ -148,7 +242,7 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         var out = ""
         var lastSpace = true
         for u in s.unicodeScalars {
-            let isCtl = u.properties.generalCategory == .control || u.properties.generalCategory == .format
+            let isCtl = isHidden(u, u.properties.generalCategory)
                 || u.properties.generalCategory == .lineSeparator || u.properties.generalCategory == .paragraphSeparator
             if isCtl || u.properties.isWhitespace {
                 if !lastSpace { out.unicodeScalars.append(" "); lastSpace = true }
