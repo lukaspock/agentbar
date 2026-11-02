@@ -239,6 +239,71 @@ final class ChatSessionTests: XCTestCase {
         XCTAssertTrue(session(store).pendingRequests.isEmpty)
     }
 
+    func testAlwaysOnlyForExactAddRules() throws {
+        func req(_ sug: String) -> String {
+            #"{"type":"control_request","request_id":"rx","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf build"},"permission_suggestions":[\#(sug)],"tool_use_id":"t"}}"#
+        }
+        func options(_ sug: String) throws -> [RequestOption] {
+            let (s, store, fake) = make()
+            try s.start(); fake.emit(req(sug))
+            let o = session(store).pendingRequests.first?.options ?? []
+            s.stop(); return o
+        }
+        let bad = [
+            #"{"type":"setMode","mode":"bypassPermissions","destination":"localSettings"}"#,
+            #"{"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow","destination":"localSettings"}"#,
+            #"{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm:*"}],"behavior":"allow","destination":"localSettings"}"#,
+            #"{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf build"},{"toolName":"Bash","ruleContent":"ls"}],"behavior":"allow","destination":"localSettings"}"#,
+            #"{"type":"addRules","rules":[{"toolName":"Write","ruleContent":"rm -rf build"}],"behavior":"allow","destination":"localSettings"}"#,
+            #"{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf build"}],"behavior":"deny","destination":"localSettings"}"#,
+            #"{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf build"}],"behavior":"allow","destination":"userSettings"}"#,
+        ]
+        for b in bad { XCTAssertEqual(try options(b).map(\.id), ["allow", "deny"], b) }
+
+        // matching rule: offered, label shows the rule, value passed on rebuilt (extra keys dropped)
+        let (s, store, fake) = make()
+        try s.start()
+        fake.emit(req(#"{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf build"}],"behavior":"allow","destination":"session","extra":"x"}"#))
+        let r = try XCTUnwrap(session(store).pendingRequests.first)
+        XCTAssertEqual(r.options.map(\.id), ["allow", "deny", "always"])
+        XCTAssertEqual(r.options[2].label, "Always allow: Bash(rm -rf build)")
+        store.respond(AgentResponse(requestId: r.requestId, optionId: "always"), sessionId: "c1")
+        let inner = (fake.written.last?["response"] as! [String: Any])["response"] as! [String: Any]
+        let up = try XCTUnwrap((inner["updatedPermissions"] as? [[String: Any]])?.first)
+        XCTAssertEqual(up["destination"] as? String, "session")
+        XCTAssertNil(up["extra"])
+        XCTAssertEqual((up["rules"] as? [[String: String]])?.first, ["toolName": "Bash", "ruleContent": "rm -rf build"])
+        s.stop()
+    }
+
+    func testChatSessionIsReservedAgainstExternalTransport() async throws {
+        let sdir = URL(fileURLWithPath: "/tmp/abc-\(UInt32.random(in: 0..<UInt32.max))")
+        let (s, store, fake) = make()
+        let server = TransportServer(store: store, adapters: AdapterRegistry.make(), directory: sdir)
+        try server.start()
+        defer { server.stop(); try? FileManager.default.removeItem(at: sdir) }
+        try s.start()
+        XCTAssertTrue(store.isChatOwned("c1"))
+        let path = server.socketPath, tok = server.tokenForTests
+        for l in [#"{"op":"update","session":"c1","state":"error"}"#, #"{"op":"log","session":"c1","kind":"action","text":"x"}"#,
+                  #"{"op":"end","session":"c1"}"#, #"{"op":"remove","session":"c1"}"#,
+                  #"{"op":"ask","session":"c1","type":"info","text":"t"}"#] {
+            let line = l.replacingOccurrences(of: "{", with: "{\"token\":\"\(tok)\",", options: [], range: l.startIndex..<l.index(after: l.startIndex))
+            let r = await detached { () -> String? in
+                guard let c = RawClient(path: path) else { return nil }
+                defer { c.close_() }
+                c.send(line + "\n"); return c.readLine()
+            }
+            XCTAssertEqual(r, #"{"error":"session reserved","ok":false}"#, l)
+        }
+        XCTAssertEqual(session(store).state, .idle)
+        try s.send(text: "still works")   // the session itself keeps writing
+        XCTAssertEqual(session(store).state, .working)
+        fake.emit(permission)
+        XCTAssertEqual(session(store).pendingRequests.count, 1)
+        s.stop()
+    }
+
     // MARK: lifecycle
 
     func testStopIsImmediateAndKillsAfterGrace() async throws {

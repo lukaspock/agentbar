@@ -26,7 +26,8 @@ public struct GenericCLIAdapter: AgentAdapter {
         }
         if let l = o["log"] as? [String: Any], let text = l["text"] as? String {
             let k = (l["kind"] as? String).flatMap(HistoryEntry.Kind.init(rawValue:)) ?? .status
-            if k != .request && k != .answer { events.append(.log(sessionId: sid, entry: HistoryEntry(kind: k, text: text))) }
+            if k == .request || k == .answer { throw CocoaError(.coderInvalidValue) }
+            events.append(.log(sessionId: sid, entry: HistoryEntry(kind: k, text: text)))
         }
         return events
     }

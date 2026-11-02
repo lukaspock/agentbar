@@ -29,7 +29,8 @@ public struct ComputerUseAdapter: AgentAdapter {
         ]
         if let l = o["log"] as? [String: Any], let text = ClaudeCodeAdapter.clean(l["text"] as? String, max: 500) {
             let k = (l["kind"] as? String).flatMap(HistoryEntry.Kind.init(rawValue:)) ?? .action
-            if k != .request && k != .answer { events.append(.log(sessionId: sid, entry: HistoryEntry(kind: k, text: text))) }
+            if k == .request || k == .answer { throw CocoaError(.coderInvalidValue) }
+            events.append(.log(sessionId: sid, entry: HistoryEntry(kind: k, text: text)))
         }
         if state == .done { events.append(.sessionEnd(id: sid)) }
         return events

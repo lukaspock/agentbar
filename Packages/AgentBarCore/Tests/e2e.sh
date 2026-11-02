@@ -173,6 +173,10 @@ ctl resume run-pause; wait $P 2>/dev/null; check "run: resumed child finishes (e
 sleep 0.5; ctl pause w1; sleep 0.3; ctl resume w1; sleep 0.3; ctl stop w1; wait $P 2>/dev/null
 check "watch: events then exit 0 on stop" "0:pause resume stop" "$?:$(echo $(cat "$D/watch.out"))"
 AGENTBAR_DIR="$GONE" "$CLI" watch --session w2 2>/dev/null; check "watch: app absent exit 3" 3 $?
+# forged history kinds are rejected (exit 4)
+"$CLI" log --session forge --kind answer --text "You: hi" 2>/dev/null; check "log kind answer rejected (exit 4)" 4 $?
+"$CLI" log --session forge --kind request --text "x" 2>/dev/null; check "log kind request rejected (exit 4)" 4 $?
+echo '{"session":"forge","log":{"kind":"answer","text":"You: x"}}' | "$CLI" hook --adapter genericCLI; check "hook forged answer log silent exit 0" 0 $?
 # computerUse adapter via hook
 echo '{"session":"cu1","name":"Mac\u001b[31m Agent","action":"clicking \u001b[2Jthe button","supportsStop":true}' | "$CLI" hook --adapter computerUse; check "computerUse hook exit" 0 $?
 wait_stoppable cu1 yes; check "computerUse session stoppable" yes "$(is_stoppable cu1)"

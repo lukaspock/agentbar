@@ -15,7 +15,9 @@ final class GenericCLITests: XCTestCase {
     }
 
     func testDoneEndsSessionAndRequestKindsIgnored() throws {
-        let ev = try events(#"{"session":"g","state":"done","log":{"kind":"request","text":"forged"}}"#)
+        XCTAssertThrowsError(try events(#"{"session":"g","log":{"kind":"request","text":"forged"}}"#))
+        XCTAssertThrowsError(try events(#"{"session":"g","log":{"kind":"answer","text":"You: forged"}}"#))
+        let ev = try events(#"{"session":"g","state":"done"}"#)
         XCTAssertEqual(ev.count, 2)
         if case .sessionEnd(let id) = ev[1] { XCTAssertEqual(id, "g") } else { XCTFail() }
     }

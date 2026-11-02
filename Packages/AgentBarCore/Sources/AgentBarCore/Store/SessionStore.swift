@@ -39,6 +39,13 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
 
     public var pendingRequestCount: Int { sessions.reduce(0) { $0 + $1.pendingRequests.count } }
 
+    /// Session ids owned by an in-process `ChatSession`. External transport ops (update/log/end/remove/ask/payload)
+    /// on these ids are rejected, so the chat history ("You: ..." answers) cannot be forged from outside.
+    private var chatOwned = Set<String>()
+    /// Only `ChatSession` calls this (module-internal on purpose).
+    func markChatOwned(_ id: String) { chatOwned.insert(id.capped(AgentBarLimits.maxIdLength)) }
+    public func isChatOwned(_ id: String) -> Bool { chatOwned.contains(id.capped(AgentBarLimits.maxIdLength)) }
+
     private var waiters: [String: @Sendable (AgentResponse) -> Void] = [:]
     private var timers: [String: Task<Void, Never>] = [:]
 
@@ -206,6 +213,7 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         }
         sessions.removeAll { $0.id == sessionId }
         endedAt[sessionId] = nil
+        chatOwned.remove(sessionId)
     }
 
     // MARK: Internals

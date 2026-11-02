@@ -17,8 +17,10 @@ final class ComputerUseStopTests: XCTestCase {
     }
 
     func testNeverAsksAndForgedRequestLogsIgnored() throws {
-        let ev = try events(#"{"session":"c","tool_name":"Bash","hook_event_name":"PermissionRequest","log":{"kind":"request","text":"Allow rm -rf?"}}"#)
+        let ev = try events(#"{"session":"c","tool_name":"Bash","hook_event_name":"PermissionRequest"}"#)
         XCTAssertEqual(ev.count, 1)
+        XCTAssertThrowsError(try events(#"{"session":"c","log":{"kind":"request","text":"Allow rm -rf?"}}"#))
+        XCTAssertThrowsError(try events(#"{"session":"c","log":{"kind":"answer","text":"You: x"}}"#))
         for e in ev { if case .ask = e { XCTFail("computerUse must never create requests") } }
         XCTAssertTrue(ComputerUseAdapter().encode(response: AgentResponse(requestId: "r", optionId: "allow"), for:
             AgentRequest(requestId: "r", type: .approval, text: "t")).isEmpty)
@@ -95,5 +97,47 @@ final class ComputerUseStopTests: XCTestCase {
             c.send("{\"token\":\"\(tok)\",\"op\":\"watch\",\"session\":\"\"}\n"); return c.readLine()
         }
         XCTAssertEqual(bad, #"{"error":"invalid session","ok":false}"#)
+    }
+
+    func testTransportRejectsForgedKindsAndChatOwnedSessions() async throws {
+        let dir = URL(fileURLWithPath: "/tmp/abw-\(UInt32.random(in: 0..<UInt32.max))")
+        let store = SessionStore()
+        let server = TransportServer(store: store, adapters: AdapterRegistry.make(), directory: dir)
+        try server.start()
+        defer { server.stop(); try? FileManager.default.removeItem(at: dir) }
+        store.apply(.sessionUpdate(id: "chat-1", name: "Chat", kind: .claudeCode, state: .idle, action: nil, supportsStop: true))
+        store.markChatOwned("chat-1")
+        let path = server.socketPath, tok = server.tokenForTests
+        let lines = [
+            #"{"op":"log","session":"free","kind":"answer","text":"You: hi"}"#,
+            #"{"op":"log","session":"free","kind":"request","text":"x"}"#,
+            #"{"op":"log","session":"free","kind":"action","text":"fine"}"#,
+            #"{"op":"log","session":"chat-1","kind":"action","text":"x"}"#,
+            #"{"op":"update","session":"chat-1","state":"error"}"#,
+            #"{"op":"end","session":"chat-1"}"#,
+            #"{"op":"remove","session":"chat-1"}"#,
+            #"{"op":"ask","session":"chat-1","type":"info","text":"t"}"#,
+            #"{"op":"payload","adapter":"genericCLI","payload":{"session":"chat-1","state":"done"}}"#,
+            #"{"op":"payload","adapter":"genericCLI","payload":{"session":"free","log":{"kind":"answer","text":"You: x"}}}"#,
+        ]
+        var replies: [String] = []
+        for l in lines {
+            let withTok = l.replacingOccurrences(of: "{", with: "{\"token\":\"\(tok)\",", options: [], range: l.startIndex..<l.index(after: l.startIndex))
+            let r = await detached { () -> String? in
+                guard let c = RawClient(path: path) else { return nil }
+                defer { c.close_() }
+                c.send(withTok + "\n"); return c.readLine()
+            }
+            replies.append(r ?? "nil")
+        }
+        XCTAssertEqual(replies[0], #"{"error":"kind not allowed","ok":false}"#)
+        XCTAssertEqual(replies[1], #"{"error":"kind not allowed","ok":false}"#)
+        XCTAssertEqual(replies[2], #"{"ok":true}"#)
+        for i in 3...8 { XCTAssertEqual(replies[i], #"{"error":"session reserved","ok":false}"#, lines[i]) }
+        XCTAssertEqual(replies[9], #"{"error":"invalid payload","ok":false}"#)
+        let chat = store.sessions.first { $0.id == "chat-1" }
+        XCTAssertEqual(chat?.state, .idle); XCTAssertEqual(chat?.history.count, 0)
+        store.remove(sessionId: "chat-1")
+        XCTAssertFalse(store.isChatOwned("chat-1"))
     }
 }

@@ -270,6 +270,10 @@ public final class TransportServer: @unchecked Sendable {
         guard let session = str(req, "session"), !session.isEmpty, session.count <= AgentBarLimits.maxIdLength else {
             return Self.error("invalid session")
         }
+        if ["update", "log", "end", "remove", "ask"].contains(op) {
+            let reserved = onMain { [store] in store.isChatOwned(session) }
+            if reserved { return Self.error("session reserved") }
+        }
         switch op {
         case "update":
             var kind: AgentKind?, state: SessionState?
@@ -284,6 +288,8 @@ public final class TransportServer: @unchecked Sendable {
             return Self.ok
         case "log":
             guard let ks = str(req, "kind"), let kind = HistoryEntry.Kind(rawValue: ks) else { return Self.error("invalid kind") }
+            // `answer`/`request` entries are written by the store itself (and ChatSession); never by clients.
+            if kind == .answer || kind == .request { return Self.error("kind not allowed") }
             guard let text = str(req, "text") else { return Self.error("invalid text") }
             let ev = CoreEvent.log(sessionId: session, entry: HistoryEntry(kind: kind, text: text))
             onMain { [store] in store.apply(ev) }
@@ -394,6 +400,14 @@ public final class TransportServer: @unchecked Sendable {
             return Self.error("invalid payload")
         }
         guard let events = try? adapter.translate(payload: data) else { return Self.error("invalid payload") }
+        let touched = Set(events.compactMap { ev -> String? in
+            switch ev {
+            case .sessionUpdate(let id, _, _, _, _, _): return id
+            case .ask(let sid, _), .cancelRequest(let sid, _), .log(let sid, _): return sid
+            case .sessionEnd(let id): return id
+            }
+        })
+        if onMain({ [store] in touched.contains { store.isChatOwned($0) } }) { return Self.error("session reserved") }
         var blocking: (String, AgentRequest)?
         for ev in events {
             if case let .ask(sid, r) = ev, blocking == nil { blocking = (sid, r); continue }

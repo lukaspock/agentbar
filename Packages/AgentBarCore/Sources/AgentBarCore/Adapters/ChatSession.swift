@@ -62,6 +62,7 @@ public final class ChatSession {
 
     public func start() throws {
         guard phase == .notStarted else { throw ChatError.alreadyStarted }
+        store.markChatOwned(sessionId)   // external transport ops on this id are rejected from now on
         let spec = try config.launchSpec(environment: environment)
         let proc: ChatProcess
         do { proc = try factory(spec) } catch { throw fail(error) }
@@ -179,17 +180,42 @@ public final class ChatSession {
                 "AgentBar cannot show this tool call in full to the user, so it was denied. Do not retry it unchanged; tell the user what you need."))
             return
         }
-        var chosen: [Any]?
-        if !suggestions.isEmpty {
-            let local = suggestions.first { ($0 as? [String: Any])?["destination"] as? String == "localSettings" }
-            let pick = local ?? suggestions[0]
-            if JSONSerialization.isValidJSONObject(pick) { chosen = [pick] }
-        }
         var options = [RequestOption(id: "allow", label: "Allow", style: .primary),
                        RequestOption(id: "deny", label: "Deny", style: .destructive)]
-        if chosen != nil { options.append(RequestOption(id: "always", label: "Always allow")) }
+        let always = Self.safeAlwaysRule(tool: tool, input: input, suggestions: suggestions)
+        if let always { options.append(RequestOption(id: "always", label: "Always allow: " + always.label)) }
+        let chosen: [Any]? = always.map { [$0.update] }
         submit(cliRequestId: cliRequestId, tool: tool, input: input, kind: .approval(suggestion: chosen),
                type: .approval, text: text, options: options, timeout: Self.approvalTimeoutSeconds)
+    }
+
+    /// "Always allow" is offered only for an `addRules`/`allow` suggestion (destination localSettings or session) whose
+    /// rules name exactly the displayed tool AND carry rule content equal to the displayed primary input value (no wildcards,
+    /// so nothing broader than the card). The update is REBUILT from validated fields (unknown keys dropped); setMode,
+    /// directories and every other type are never passed on.
+    static func safeAlwaysRule(tool: String, input: [String: Any], suggestions: [Any]) -> (update: [String: Any], label: String)? {
+        var primary: String?
+        for key in ["command", "file_path", "path", "url", "pattern", "notebook_path"] {
+            if let v = input[key] as? String { primary = v; break }
+        }
+        guard let primary, !primary.isEmpty else { return nil }
+        var found: [(rank: Int, update: [String: Any], label: String)] = []
+        for case let sug as [String: Any] in suggestions {
+            guard sug["type"] as? String == "addRules", sug["behavior"] as? String == "allow",
+                  let dest = sug["destination"] as? String, dest == "localSettings" || dest == "session",
+                  let rules = sug["rules"] as? [[String: Any]], rules.count == 1,
+                  rules[0]["toolName"] as? String == tool,
+                  let content = rules[0]["ruleContent"] as? String, content == primary,
+                  !content.contains("*"), !content.contains("\n") else { continue }
+            let label = ClaudeCodeAdapter.singleLine("\(tool)(\(content))")
+            guard label == "\(tool)(\(content))", !ClaudeCodeAdapter.hasCollapsedCluster(label),
+                  label.count + 15 <= AgentBarLimits.maxNameLength else { continue }
+            found.append((dest == "localSettings" ? 0 : 1,
+                          ["type": "addRules", "behavior": "allow", "destination": dest,
+                           "rules": [["toolName": tool, "ruleContent": content]]], label))
+        }
+        guard let best = found.min(by: { $0.rank < $1.rank }) else { return nil }
+        return (best.update, best.label)
     }
 
     private func handleQuestion(cliRequestId: String, input: [String: Any]) {
