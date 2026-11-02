@@ -131,9 +131,33 @@ final class ChatSessionTests: XCTestCase {
         try s.start(); try s.send(text: "go")
         fake.emit(#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Failed to authenticate"}"#)
         XCTAssertEqual(session(store).state, .error)
-        XCTAssertTrue(session(store).history.contains { $0.kind == .error && $0.text.contains("Failed to authenticate") })
+        XCTAssertTrue(session(store).history.contains { $0.kind == .error && $0.text == "Error: Failed to authenticate" })
         try s.send(text: "again")   // recoverable
         XCTAssertEqual(session(store).state, .working)
+    }
+
+    func testErrorResultIsLoggedOnceWithoutSuccessPrefix() throws {
+        let (s, store, fake) = make()
+        try s.start(); try s.send(text: "go")
+        fake.emit(#"{"type":"assistant","message":{"content":[{"type":"text","text":"Failed to authenticate"}]}}"#)
+        fake.emit(#"{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate"}"#)
+        let h = session(store).history
+        XCTAssertEqual(h.filter { $0.text.contains("Failed to authenticate") }.count, 1)
+        XCTAssertFalse(h.contains { $0.text.hasPrefix("success") || $0.text.hasPrefix("Claude: Failed") })
+        XCTAssertTrue(h.contains { $0.kind == .error && $0.text == "Error: Failed to authenticate" })
+        XCTAssertTrue(h.contains { $0.kind == .status && $0.text == "error" })   // plain state line stays
+        // different assistant text is kept; error without text falls back to the subtype
+        try s.send(text: "again")
+        fake.emit(#"{"type":"assistant","message":{"content":[{"type":"text","text":"I tried X"}]}}"#)
+        fake.emit(#"{"type":"result","subtype":"error_max_turns","is_error":true}"#)
+        let h2 = session(store).history
+        XCTAssertTrue(h2.contains { $0.text == "Claude: I tried X" })
+        XCTAssertTrue(h2.contains { $0.text == "Error: error_max_turns" })
+        // normal turn: text shown once after the result
+        try s.send(text: "ok")
+        fake.emit(#"{"type":"assistant","message":{"content":[{"type":"text","text":"Fine"}]}}"#)
+        fake.emit(#"{"type":"result","subtype":"success","is_error":false,"result":"Fine"}"#)
+        XCTAssertEqual(session(store).history.filter { $0.text == "Claude: Fine" }.count, 1)
     }
 
     func testMalformedLineIsIgnored() throws {
@@ -258,6 +282,16 @@ final class ChatSessionTests: XCTestCase {
             #"{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf build"}],"behavior":"deny","destination":"localSettings"}"#,
             #"{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf build"}],"behavior":"allow","destination":"userSettings"}"#,
         ]
+        // glob metacharacters in rule content (path tools treat it as a glob): never offered, even when equal to the input
+        for meta in ["?", "[a]", "{a,b}", "!", "\\\\"] {
+            let (s2, store2, fake2) = make()
+            try s2.start()
+            let val = "/tmp/x\(meta)y"
+            let rule = val.replacingOccurrences(of: "\\", with: "\\\\")
+            fake2.emit(#"{"type":"control_request","request_id":"g","request":{"subtype":"can_use_tool","tool_name":"Read","input":{"file_path":"\#(rule)"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"\#(rule)"}],"behavior":"allow","destination":"localSettings"}],"tool_use_id":"t"}}"#)
+            XCTAssertEqual(session(store2).pendingRequests.first?.options.map(\.id), ["allow", "deny"], meta)
+            s2.stop()
+        }
         for b in bad { XCTAssertEqual(try options(b).map(\.id), ["allow", "deny"], b) }
 
         // matching rule: offered, label shows the rule, value passed on rebuilt (extra keys dropped)
@@ -351,6 +385,33 @@ final class ChatSessionTests: XCTestCase {
         try s.start()
         fake.onExit?(0)
         XCTAssertEqual(session(store).state, .done)
+    }
+
+    func testReservationReleasedAfterExit() throws {
+        let (s, store, fake) = make()
+        try s.start()
+        XCTAssertTrue(store.isChatOwned("c1"))
+        fake.onExit?(0)
+        XCTAssertFalse(store.isChatOwned("c1"))
+        let (s2, store2, _) = make(failStart: true)
+        XCTAssertThrowsError(try s2.start())
+        XCTAssertFalse(store2.isChatOwned("c1"))
+    }
+
+    func testNoStoreWritesAfterStopAndRemove() throws {
+        let (s, store, fake) = make()
+        try s.start()
+        s.stop()
+        store.remove(sessionId: "c1")          // user removes the row (STOP fires stop() first in the app)
+        fake.emit(#"{"type":"assistant","message":{"content":[{"type":"text","text":"late"}]}}"#)
+        fake.emit(#"{"type":"result","subtype":"success","is_error":false,"result":"late"}"#)
+        fake.onExit?(143)
+        XCTAssertFalse(store.sessions.contains { $0.id == "c1" }, "late events must not re-create the row")
+        XCTAssertFalse(store.isChatOwned("c1"), "reservation released after the last write")
+        // normal stop (row still there): final events are written once
+        let (s2, store2, fake2) = make()
+        try s2.start(); s2.stop(); fake2.onExit?(143)
+        XCTAssertEqual(store2.sessions.first?.state, .done)
     }
 
     func testSpawnFailure() {

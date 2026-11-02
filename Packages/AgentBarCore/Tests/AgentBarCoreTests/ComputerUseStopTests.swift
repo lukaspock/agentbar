@@ -137,7 +137,19 @@ final class ComputerUseStopTests: XCTestCase {
         XCTAssertEqual(replies[9], #"{"error":"invalid payload","ok":false}"#)
         let chat = store.sessions.first { $0.id == "chat-1" }
         XCTAssertEqual(chat?.state, .idle); XCTAssertEqual(chat?.history.count, 0)
-        store.remove(sessionId: "chat-1")
+        var stopped: [String] = []
+        store.stopHandler = { stopped.append($0) }
+        store.remove(sessionId: "chat-1")      // UI cross while the chat process runs
+        XCTAssertEqual(stopped, ["chat-1"])
+        XCTAssertTrue(store.isChatOwned("chat-1"), "reservation survives remove")
+        let after = await detached { () -> String? in
+            guard let c = RawClient(path: path) else { return nil }
+            defer { c.close_() }
+            c.send("{\"token\":\"\(tok)\",\"op\":\"update\",\"session\":\"chat-1\",\"state\":\"working\"}\n"); return c.readLine()
+        }
+        XCTAssertEqual(after, #"{"error":"session reserved","ok":false}"#)
+        XCTAssertFalse(store.sessions.contains { $0.id == "chat-1" })
+        store.unmarkChatOwned("chat-1")
         XCTAssertFalse(store.isChatOwned("chat-1"))
     }
 }

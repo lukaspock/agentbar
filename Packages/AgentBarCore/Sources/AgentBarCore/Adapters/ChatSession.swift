@@ -42,6 +42,8 @@ public final class ChatSession {
     private var stderrTail = Data()
     private var malformed = 0
     private var watchdog: Task<Void, Never>?
+    /// Last assistant text, logged only when the next event shows it was not the text of an error result.
+    private var pendingAssistant: String?
 
     public static let approvalTimeoutSeconds = 120
     public static let maxUserTextLength = 20_000
@@ -63,7 +65,8 @@ public final class ChatSession {
     public func start() throws {
         guard phase == .notStarted else { throw ChatError.alreadyStarted }
         store.markChatOwned(sessionId)   // external transport ops on this id are rejected from now on
-        let spec = try config.launchSpec(environment: environment)
+        let spec: ChatLaunchSpec
+        do { spec = try config.launchSpec(environment: environment) } catch { store.unmarkChatOwned(sessionId); throw error }
         let proc: ChatProcess
         do { proc = try factory(spec) } catch { throw fail(error) }
         process = proc
@@ -103,6 +106,7 @@ public final class ChatSession {
         case .stopping: process?.kill(); return
         case .running: break
         }
+        flushAssistant()
         phase = .stopping
         stopRequested = true
         denyAllPending(message: "Stopped by the user in AgentBar")
@@ -114,7 +118,7 @@ public final class ChatSession {
     // MARK: output handling
 
     func handle(line: Data) {
-        guard phase == .running || phase == .stopping else { return }
+        guard phase == .running else { return }   // after stop(): no further store writes (would re-create a removed row)
         lastActivity = clock()
         guard let msg = ChatWire.parse(line: line) else {
             malformed += 1
@@ -127,6 +131,7 @@ public final class ChatSession {
                 store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .status, text: "model \(m)")))
             }
         case let .canUseTool(rid, tool, input, suggestions, _):
+            flushAssistant()
             if phase == .running { handlePermission(cliRequestId: rid, tool: tool, input: input, suggestions: suggestions) }
             else { process?.write(line: ChatWire.deny(requestId: rid, message: "Stopped by the user in AgentBar")) }
         case let .controlCancel(rid):
@@ -138,10 +143,14 @@ public final class ChatSession {
             turnActive = false
             let shown = ClaudeCodeAdapter.clean(text, max: 500)
             if isError {
-                let detail = [subtype.isEmpty ? nil : ClaudeCodeAdapter.clean(subtype, max: 60), shown].compactMap { $0 }.joined(separator: ": ")
-                store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .error, text: detail.isEmpty ? "error" : detail)))
+                // The CLI often repeats the error as assistant text: show it once, as the error entry.
+                if let p = pendingAssistant, let shown, ClaudeCodeAdapter.clean(p, max: 500) == shown { pendingAssistant = nil }
+                flushAssistant()
+                let detail = shown ?? ClaudeCodeAdapter.clean(subtype, max: 60) ?? "unknown error"
+                store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .error, text: "Error: " + detail)))
                 store.apply(.sessionUpdate(id: sessionId, name: nil, kind: nil, state: .error, action: "", supportsStop: nil))
             } else {
+                flushAssistant()
                 store.apply(.sessionUpdate(id: sessionId, name: nil, kind: nil, state: .idle, action: "", supportsStop: nil))
             }
         case .assistantText, .toolUse, .ignored:
@@ -149,13 +158,21 @@ public final class ChatSession {
         }
     }
 
+    private func flushAssistant() {
+        guard let t = pendingAssistant else { return }
+        pendingAssistant = nil
+        store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .status, text: "Claude: " + t.capped(1500))))
+    }
+
     private func handleAssistant(_ part: ChatWire.Incoming) {
         switch part {
         case let .assistantText(t):
             let shown = ClaudeCodeAdapter.multiLine(t)
             guard !shown.isEmpty else { return }
-            store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .status, text: "Claude: " + shown.capped(1500))))
+            flushAssistant()
+            pendingAssistant = shown
         case let .toolUse(_, name, input):
+            flushAssistant()
             let tool = ClaudeCodeAdapter.clean(name, max: 60) ?? "tool"
             let s = ClaudeCodeAdapter.summarize(tool: tool, input: input)
             store.apply(.sessionUpdate(id: sessionId, name: nil, kind: nil, state: .working,
@@ -193,6 +210,9 @@ public final class ChatSession {
     /// rules name exactly the displayed tool AND carry rule content equal to the displayed primary input value (no wildcards,
     /// so nothing broader than the card). The update is REBUILT from validated fields (unknown keys dropped); setMode,
     /// directories and every other type are never passed on.
+    /// Glob/escape characters (path tools read ruleContent as a glob) plus line breaks: such a rule may match more than shown.
+    private static let globMeta = Set("*?[]{}!\\\n\r".unicodeScalars)
+
     static func safeAlwaysRule(tool: String, input: [String: Any], suggestions: [Any]) -> (update: [String: Any], label: String)? {
         var primary: String?
         for key in ["command", "file_path", "path", "url", "pattern", "notebook_path"] {
@@ -206,7 +226,7 @@ public final class ChatSession {
                   let rules = sug["rules"] as? [[String: Any]], rules.count == 1,
                   rules[0]["toolName"] as? String == tool,
                   let content = rules[0]["ruleContent"] as? String, content == primary,
-                  !content.contains("*"), !content.contains("\n") else { continue }
+                  content.unicodeScalars.allSatisfy({ !Self.globMeta.contains($0) }) else { continue }
             let label = ClaudeCodeAdapter.singleLine("\(tool)(\(content))")
             guard label == "\(tool)(\(content))", !ClaudeCodeAdapter.hasCollapsedCluster(label),
                   label.count + 15 <= AgentBarLimits.maxNameLength else { continue }
@@ -316,11 +336,15 @@ public final class ChatSession {
     func handleExit(status: Int32) {
         guard phase != .exited else { return }
         phase = .exited
+        defer { store.unmarkChatOwned(sessionId) }   // release the reservation after the final events below
         watchdog?.cancel(); watchdog = nil
         process = nil
         let all = pending
         pending = [:]
         for storeId in all.keys { store.apply(.cancelRequest(sessionId: sessionId, requestId: storeId)) }
+        // The row was removed by the user (store.remove): write nothing, a late event would bring it back.
+        guard store.sessions.contains(where: { $0.id == sessionId }) else { pendingAssistant = nil; return }
+        flushAssistant()
         if idleKilled {
             let d = Int(config.idleTimeout ?? 0)
             store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .error, text: "no output for \(d) s, process killed")))
@@ -372,6 +396,7 @@ public final class ChatSession {
         store.apply(.sessionUpdate(id: sessionId, name: displayName, kind: .claudeCode, state: .error,
                                    action: "failed to start", supportsStop: false))
         store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .error, text: "start failed: " + msg)))
+        store.unmarkChatOwned(sessionId)
         return .spawnFailed(msg)
     }
 }

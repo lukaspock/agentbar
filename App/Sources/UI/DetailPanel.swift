@@ -120,6 +120,9 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                     HistoryList(session: selected)
                 }
             }
+            if hub.backend != nil, !(selected.map { hub.supportsChat($0) } ?? false) {
+                NewSessionButton().frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 10)
+            }
         }
         .padding(.top, model.layout.expandedTopPadding)
         .padding(.horizontal, 16)
@@ -524,13 +527,14 @@ private struct ChatPanel<Sink: ResponseSink>: View {
             }
             transcript
             HStack(spacing: 8) {
-                ReplyField(placeholder: "Message to agent, Enter to send",
+                ReplyField(placeholder: "Message, Enter to send",
                            onEditing: { model.setEditing($0) },
                            onSubmit: { send($0) })
                     .id(fieldKey)
                     .frame(height: 20)
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.10)))
+                NewSessionButton()
             }
         }
         .padding(.horizontal, 10)
@@ -565,17 +569,45 @@ private struct ChatPanel<Sink: ResponseSink>: View {
         case .user(let text):
             HStack {
                 Spacer(minLength: 40)
-                Text(text).font(.system(size: 12)).foregroundStyle(.black)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.92)))
+                bubble(text, fg: .black, bg: Color.white.opacity(0.92))
             }
-        case .agent(let text, let kind):
+        case .agent(let text):
             HStack {
-                Text(text).font(.system(size: 12))
-                    .foregroundStyle(kind == .error ? BarTheme.error : .white.opacity(kind == .status ? 0.45 : 0.85))
-                    .fixedSize(horizontal: false, vertical: true)
+                bubble(text, fg: .white, bg: Color.white.opacity(0.28))
                 Spacer(minLength: 40)
             }
+        case .error(let text):
+            HStack {
+                bubble(text, fg: .white, bg: BarTheme.error.opacity(0.55))
+                Spacer(minLength: 40)
+            }
+        case .note(let text):
+            Text(text).font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
+                .lineLimit(2).padding(.horizontal, 4)
         }
+    }
+
+    private func bubble(_ text: String, fg: Color, bg: Color) -> some View {
+        Text(text).font(.system(size: 12)).foregroundStyle(fg)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(bg))
+    }
+}
+
+/// Panel footer: starts a new chat session (same flow as the menu item), reachable without a selected chat session.
+private struct NewSessionButton: View {
+    var body: some View {
+        Button { NewChatFlow.run() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                Text("New session").font(.system(size: 12, weight: .semibold)).lineLimit(1).fixedSize()
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 13).padding(.vertical, 6)
+            .background(Capsule().fill(Color.white.opacity(0.16)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }

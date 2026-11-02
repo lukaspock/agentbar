@@ -44,6 +44,8 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
     private var chatOwned = Set<String>()
     /// Only `ChatSession` calls this (module-internal on purpose).
     func markChatOwned(_ id: String) { chatOwned.insert(id.capped(AgentBarLimits.maxIdLength)) }
+    /// Only `ChatSession` calls this, when its process has exited / on teardown. `remove` deliberately keeps the reservation.
+    func unmarkChatOwned(_ id: String) { chatOwned.remove(id.capped(AgentBarLimits.maxIdLength)) }
     public func isChatOwned(_ id: String) -> Bool { chatOwned.contains(id.capped(AgentBarLimits.maxIdLength)) }
 
     private var waiters: [String: @Sendable (AgentResponse) -> Void] = [:]
@@ -206,6 +208,10 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
     /// Note: the agent is not told to stop; if it later sends any event for the same id, the session re-appears
     /// as a fresh entry (new name = id, no history).
     public func remove(sessionId: String) {
+        guard sessions.contains(where: { $0.id == sessionId }) else { return }
+        // Removing a running chat row must not leave its process running unobserved: stop it first. The reservation
+        // stays until the ChatSession releases it (unmarkChatOwned), so outside callers cannot take over the id.
+        if chatOwned.contains(sessionId) { command(.stop, sessionId: sessionId) }
         guard let i = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         for r in sessions[i].pendingRequests {
             resolve(requestId: r.requestId, sessionId: sessionId,
@@ -213,7 +219,6 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         }
         sessions.removeAll { $0.id == sessionId }
         endedAt[sessionId] = nil
-        chatOwned.remove(sessionId)
     }
 
     // MARK: Internals

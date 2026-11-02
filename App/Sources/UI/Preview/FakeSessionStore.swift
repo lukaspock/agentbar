@@ -107,9 +107,10 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
             let chat = [h(200, .status, "Chat started in ~/Projects/agentbar"),
                         h(150, .answer, "You: Which targets does the project define?"),
                         h(140, .action, "Read project.yml"),
-                        h(120, .action, "Two targets: the app and the agentbar CLI."),
+                        h(120, .status, "Claude: Two targets: the app and the agentbar CLI."),
                         h(60, .answer, "You: Please add a Stop button to the session row."),
-                        h(30, .action, "Editing DetailPanel.swift")]
+                        h(30, .action, "Editing DetailPanel.swift"),
+                        h(10, .error, "Tool call denied: rm -rf")]
             list = [AgentSession(id: "chat1", name: "agentbar", kind: .claudeCode, state: .working,
                                  currentAction: "Editing DetailPanel.swift", history: chat, supportsStop: true),
                     AgentSession(id: "m", name: "Browser Agent", kind: .computerUse, state: .working,

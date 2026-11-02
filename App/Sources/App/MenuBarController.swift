@@ -74,28 +74,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return item
     }
 
-    /// The working directory is always chosen explicitly by the user; nothing is started without it.
-    @objc private func newChat() {
-        guard let backend = ChatHub.shared.backend else { return }
-        let panel = NSOpenPanel()
-        panel.title = "New chat session"
-        panel.message = "Choose the working directory for the agent"
-        panel.prompt = "Start chat"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let dir = panel.url else { return }
-        backend.startSession(directory: dir) { result in
-            if case .failure(let error) = result {
-                let alert = NSAlert()
-                alert.messageText = "Chat could not be started"
-                alert.informativeText = error.localizedDescription
-                alert.runModal()
-            }
-        }
-    }
+    @objc private func newChat() { NewChatFlow.run() }
 
     @objc private func toggleSound() { AttentionSettings.soundEnabled.toggle() }
     @objc private func toggleAutoExpand() { AttentionSettings.autoExpandEnabled.toggle() }

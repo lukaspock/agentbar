@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import AgentBarCore
 
 /// What the UI needs from the chat layer (implemented by the CHAT module; `FakeChatBackend` for demos).
@@ -21,14 +22,45 @@ final class ChatHub: ObservableObject {
     func supportsChat(_ session: AgentSession) -> Bool { backend?.supportsChat(sessionId: session.id) ?? false }
 }
 
-/// Message split of the history convention: "You: ..." = user message.
+/// Message split of the history convention: "You: ..." = user message, "Claude: ..." (status) = agent text,
+/// errors = error bubble, everything else = small dimmed side note.
 enum ChatLine {
     case user(String)
-    case agent(String, HistoryEntry.Kind)
+    case agent(String)
+    case error(String)
+    case note(String)
 
     static func parse(_ e: HistoryEntry) -> ChatLine {
         if e.kind == .answer, e.text.hasPrefix("You: ") { return .user(String(e.text.dropFirst(5))) }
-        return .agent(e.text, e.kind)
+        if e.kind == .error { return .error(e.text) }
+        if e.kind == .status, e.text.hasPrefix("Claude: ") { return .agent(String(e.text.dropFirst(8))) }
+        return .note(e.text)
+    }
+}
+
+/// Shared by the menu item and the panel button: explicit directory dialog, then start.
+@MainActor
+enum NewChatFlow {
+    static func run() {
+        guard let backend = ChatHub.shared.backend else { return }
+        let panel = NSOpenPanel()
+        panel.title = "New chat session"
+        panel.message = "Choose the working directory for the agent"
+        panel.prompt = "Start chat"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let dir = panel.url else { return }
+        backend.startSession(directory: dir) { result in
+            if case .failure(let error) = result {
+                let alert = NSAlert()
+                alert.messageText = "Chat could not be started"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
     }
 }
 
@@ -48,7 +80,7 @@ final class FakeChatBackend: ChatBackend {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak store] in
             MainActor.assumeIsolated {
                 store?.appendHistory(sessionId: sessionId,
-                                     HistoryEntry(kind: .action, text: "Got it. I will look at \"\(text.prefix(40))\" next."),
+                                     HistoryEntry(kind: .status, text: "Claude: Got it. I will look at \"\(text.prefix(40))\" next."),
                                      state: .idle)
             }
         }
