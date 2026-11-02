@@ -157,9 +157,10 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         var out = String.UnicodeScalarView()
         var newlines = 0
         var prevCR = false
-        for u in s.unicodeScalars {
+        for (u, keep) in units(s) {
             let cat = u.properties.generalCategory
             defer { prevCR = (u == "\r") }
+            if keep { newlines = 0; out.append(u); continue }
             if u == "\n" || u == "\r" || cat == .lineSeparator || cat == .paragraphSeparator || u.value == 0x85 {
                 if u == "\n", prevCR { continue }
                 newlines += 1
@@ -173,6 +174,40 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
             out.append(u)
         }
         return String(out).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Max scalars per grapheme cluster (base + marks). More => the whole cluster becomes one U+FFFD (Zalgo overlay).
+    static let maxClusterScalars = 3
+    static let maxEmojiClusterScalars = 12
+
+    /// Splits `s` into scalars; `keep == true` marks scalars of a legitimate emoji sequence (ZWJ, VS16, skin tones)
+    /// that must bypass the hidden-character filter. Clusters with too many marks, an enclosing mark, or starting with
+    /// a mark are replaced by a single (non-kept) U+FFFD.
+    static func units(_ s: String) -> [(Unicode.Scalar, Bool)] {
+        var res: [(Unicode.Scalar, Bool)] = []
+        res.reserveCapacity(s.unicodeScalars.count)
+        for ch in s {
+            let sc = Array(ch.unicodeScalars)
+            if sc.count == 1 || ch == "\r\n" { res.append(contentsOf: sc.map { ($0, false) }); continue }
+            if isEmojiSequence(sc) { res.append(contentsOf: sc.map { ($0, true) }); continue }
+            let first = sc[0].properties.generalCategory
+            let leadingMark = first == .nonspacingMark || first == .spacingMark || first == .enclosingMark
+            if leadingMark || sc.count > maxClusterScalars || sc.contains(where: { $0.properties.generalCategory == .enclosingMark }) {
+                res.append(("\u{FFFD}", false))
+            } else {
+                res.append(contentsOf: sc.map { ($0, false) })
+            }
+        }
+        return res
+    }
+
+    private static func isEmojiSequence(_ sc: [Unicode.Scalar]) -> Bool {
+        guard sc.count > 1, sc.count <= maxEmojiClusterScalars, sc[0].value > 0x7F, sc[0].properties.isEmoji else { return false }
+        return sc.allSatisfy { u in
+            if u.properties.generalCategory == .enclosingMark { return false }
+            return u.value == 0x200D || u.value == 0xFE0F || (0x1F3FB...0x1F3FF).contains(u.value)
+                || (u.value > 0x7F && u.properties.isEmoji)
+        }
     }
 
     /// Invisible or deceptive scalars: controls, format (zero-width, bidi, tags), private use, unassigned, surrogates,
@@ -241,7 +276,8 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         guard let s else { return nil }
         var out = ""
         var lastSpace = true
-        for u in s.unicodeScalars {
+        for (u, keep) in units(s) {
+            if keep { out.unicodeScalars.append(u); lastSpace = false; if out.count > max + 1 { break }; continue }
             let isCtl = isHidden(u, u.properties.generalCategory)
                 || u.properties.generalCategory == .lineSeparator || u.properties.generalCategory == .paragraphSeparator
             if isCtl || u.properties.isWhitespace {

@@ -78,6 +78,9 @@ final class BarViewModel: ObservableObject {
     var keyHandler: ((Bool) -> Void)?
     var onDrag: ((DragPhase) -> Void)?
 
+    /// Set when the panel opened by itself (new request); the approval click guard uses it for a longer settle window.
+    private(set) var lastAutoExpand: Date?
+    private var holdUntil = Date.distantPast
     private var collapseWork: DispatchWorkItem?
     private var pointerInside = false
 
@@ -85,6 +88,14 @@ final class BarViewModel: ObservableObject {
         self.layout = layout
         self.expanded = startExpanded
         self.pinnedExpanded = startExpanded
+    }
+
+    /// Opens the panel briefly (new request). Collapses again after `hold` seconds unless the pointer is inside or a reply is being typed.
+    func autoExpand(hold: TimeInterval = 5) {
+        guard !expanded else { return }
+        lastAutoExpand = Date()
+        holdUntil = Date().addingTimeInterval(hold)
+        expanded = true
     }
 
     func pointerChanged(_ inside: Bool) {
@@ -101,7 +112,7 @@ final class BarViewModel: ObservableObject {
                 }
             }
             collapseWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, holdUntil.timeIntervalSinceNow), execute: work)
         }
     }
 

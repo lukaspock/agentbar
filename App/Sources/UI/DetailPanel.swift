@@ -14,13 +14,14 @@ final class ApprovalGuardModel: ObservableObject {
 
     func observe(order: [String]) { state.observe(order: order, now: Date()); scheduleRefresh() }
     /// Height animation of the panel takes longer than the card settle window: extend it a little.
-    func layoutChanged() { state.layoutChanged(now: Date().addingTimeInterval(0.2)); scheduleRefresh() }
+    /// `extra` lengthens the window, e.g. when the panel opened by itself under a resting pointer.
+    func layoutChanged(extra: TimeInterval = 0.2) { state.layoutChanged(now: Date().addingTimeInterval(extra)); scheduleRefresh(extra: extra) }
     func isArmed(_ id: String, currentOrder: [String]) -> Bool {
         state.isArmed(id, currentOrder: currentOrder, now: Date())
     }
-    private func scheduleRefresh() {
+    private func scheduleRefresh(extra: TimeInterval = 0.2) {
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64((ApprovalClickGuard.settleInterval + 0.25) * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64((ApprovalClickGuard.settleInterval + max(extra, 0.2) + 0.05) * 1_000_000_000))
             self?.epoch += 1
         }
     }
@@ -38,7 +39,7 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
     }
 
     private var selected: AgentSession? {
-        store.sessions.first { $0.id == model.selectedSessionId } ?? store.sessions.first
+        store.sessions.first { $0.id == model.selectedSessionId } ?? SessionGrouping.flat(store.sessions).first
     }
 
     var body: some View {
@@ -50,7 +51,11 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
         .onAppear { guardModel.observe(order: openRequests.map(\.request.requestId)); guardModel.layoutChanged() }
         .onChange(of: openRequests.map(\.request.requestId)) { _, ids in guardModel.observe(order: ids) }
         .onChange(of: contentHeight) { _, _ in guardModel.layoutChanged() }
-        .onChange(of: model.expanded) { _, _ in guardModel.layoutChanged() }
+        .onChange(of: model.expanded) { _, _ in
+            // Opened by a new request (not by the user): keep the buttons locked longer, the pointer may rest anywhere.
+            let auto = model.lastAutoExpand.map { Date().timeIntervalSince($0) < 0.5 } ?? false
+            guardModel.layoutChanged(extra: auto ? 1.2 : 0.2)
+        }
         .frame(width: model.layout.expandedWidth)
     }
 
@@ -79,21 +84,26 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                 }
             }
             if !store.sessions.isEmpty {
+                let groups = SessionGrouping.groups(store.sessions)
                 VStack(spacing: 2) {
-                    ForEach(store.sessions) { session in
-                        SessionRow(session: session, selected: session.id == selected?.id, sink: store)
-                            .onTapGesture { model.selectedSessionId = session.id }
-                            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                    ForEach(groups) { group in
+                        if group.sessions.count > 1 { GroupHeader(group: group) }
+                        ForEach(group.sessions) { session in
+                            SessionRow(session: session, selected: session.id == selected?.id,
+                                       disambiguate: group.sessions.count > 1, sink: store)
+                                .onTapGesture { withAnimation(BarTheme.spring) { model.selectedSessionId = session.id } }
+                                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                        }
                     }
                 }
-                .animation(BarTheme.spring, value: store.sessions.map(\.id))
+                .animation(BarTheme.spring, value: groups.flatMap { $0.sessions.map(\.id) })
                 if store.sessions.contains(where: { removableQuietly($0) }) {
                     Button {
                         withAnimation(BarTheme.spring) {
                             for s in store.sessions where removableQuietly(s) { store.remove(sessionId: s.id) }
                         }
                     } label: {
-                        Text("Erledigte entfernen").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                        Text("Clear finished").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                             .padding(.vertical, 2).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -249,7 +259,7 @@ private struct ApprovalBody: View {
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.black.opacity(0.35)))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 if bodyHeight > maxHeight {
-                    Text("↓ Mehr Text: im Feld scrollen, bevor du antwortest")
+                    Text("↓ More below: scroll this field before answering")
                         .font(.system(size: 10)).foregroundStyle(BarTheme.needsInput)
                 }
             }
@@ -287,13 +297,14 @@ struct PillButton: View {
 private struct SessionRow<Sink: ResponseSink>: View {
     let session: AgentSession
     let selected: Bool
+    var disambiguate = false          // several sessions of one project: show a short id to tell them apart
     let sink: Sink
     @State private var hovering = false
     @State private var confirming = false
 
     /// Removing a session that is working or has open requests cancels the agent's request => needs a second click.
     private var needsConfirm: Bool { session.state == .working || session.state == .needsInput || !session.pendingRequests.isEmpty }
-    private var alwaysVisible: Bool { [.done, .idle, .error].contains(session.state) && session.pendingRequests.isEmpty }
+    private var quiet: Bool { [.done, .idle, .error].contains(session.state) && session.pendingRequests.isEmpty }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -308,6 +319,14 @@ private struct SessionRow<Sink: ResponseSink>: View {
                 HStack(spacing: 5) {
                     Circle().fill(BarTheme.color(for: session.state)).frame(width: 6, height: 6)
                     Text(BarTheme.label(for: session.state)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                    TimelineView(.periodic(from: .now, by: 15)) { ctx in
+                        Text("· \(SessionGrouping.shortAge(from: session.updatedAt, now: ctx.date))")
+                            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.3))
+                    }
+                    if disambiguate {
+                        Text("#\(String(session.id.prefix(6)))").font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.3))
+                    }
                 }
                 if let action = session.currentAction {
                     Text(action).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
@@ -328,7 +347,7 @@ private struct SessionRow<Sink: ResponseSink>: View {
                 }
                 .buttonStyle(.plain)
             }
-            if hovering || alwaysVisible || confirming { removeButton.transition(.opacity) }
+            removeButton
         }
         .onHover { hovering = $0 }
         .animation(BarTheme.spring, value: hovering)
@@ -339,7 +358,10 @@ private struct SessionRow<Sink: ResponseSink>: View {
             if !Task.isCancelled { confirming = false }
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(selected ? 0.07 : 0)))
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(selected ? 0.10 : 0)))
+        .overlay(alignment: .leading) {
+            Capsule().fill(Color.white.opacity(0.7)).frame(width: 2.5, height: 22).opacity(selected ? 1 : 0)
+        }
         .contentShape(Rectangle())
     }
 
@@ -350,37 +372,88 @@ private struct SessionRow<Sink: ResponseSink>: View {
         } label: {
             Group {
                 if confirming {
-                    Text("Wirklich?").font(.system(size: 11, weight: .semibold)).foregroundStyle(BarTheme.error)
+                    Text("Sure?").font(.system(size: 11, weight: .semibold)).foregroundStyle(BarTheme.error)
                         .padding(.horizontal, 9).padding(.vertical, 4)
                         .background(Capsule().fill(BarTheme.error.opacity(0.18)))
                 } else {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(hovering ? 0.55 : 0.28))
+                        .foregroundStyle(.white.opacity(hovering ? 0.7 : (quiet ? 0.28 : 0.16)))
                         .frame(width: 20, height: 20)
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Entfernen")
+        .help("Remove")
     }
 }
 
+private struct GroupHeader: View {
+    let group: SessionGroup
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(group.name).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
+            Text("\(group.sessions.count) sessions").font(.system(size: 11)).foregroundStyle(.white.opacity(0.3))
+            if group.waitingCount > 0 {
+                Text("\(group.waitingCount) waiting").font(.system(size: 11, weight: .medium)).foregroundStyle(BarTheme.needsInput)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10).padding(.top, 6)
+    }
+}
+
+private struct HistoryHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Complete history of the selected session (store keeps max 50), newest first, in a scrollable window with times.
 private struct HistoryList: View {
     let session: AgentSession
+    @State private var listHeight: CGFloat = 0
+    private let maxHeight: CGFloat = 150
+
+    private var entries: [HistoryEntry] { Array(session.history.reversed()) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Recent · \(session.name)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
-            ForEach(session.history.suffix(5)) { e in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(e.date, format: .dateTime.hour().minute())
-                        .font(.system(size: 11).monospacedDigit()).foregroundStyle(.white.opacity(0.35))
-                    Text(e.text).font(.system(size: 12))
-                        .foregroundStyle(e.kind == .error ? BarTheme.error : .white.opacity(0.7)).lineLimit(1)
+            HStack {
+                Text("History · \(session.name)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                Spacer()
+                Text("\(session.history.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.white.opacity(0.3))
+            }
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(entries) { e in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(e.date, format: .dateTime.hour().minute().second())
+                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.white.opacity(0.35))
+                            Text(e.text).font(.system(size: 12))
+                                .foregroundStyle(color(e.kind)).lineLimit(3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                 }
+                .padding(.trailing, 6)
+                .background(GeometryReader { Color.clear.preference(key: HistoryHeightKey.self, value: $0.size.height) })
+            }
+            .onPreferenceChange(HistoryHeightKey.self) { listHeight = $0 }
+            .frame(height: listHeight == 0 ? maxHeight : min(listHeight, maxHeight))
+            if listHeight > maxHeight {
+                Text("↓ Scroll for older entries").font(.system(size: 10)).foregroundStyle(.white.opacity(0.3))
             }
         }
         .padding(.horizontal, 10)
+    }
+
+    private func color(_ kind: HistoryEntry.Kind) -> Color {
+        switch kind {
+        case .error: return BarTheme.error
+        case .request: return BarTheme.needsInput.opacity(0.9)
+        case .answer: return .white.opacity(0.85)
+        case .status, .action: return .white.opacity(0.7)
+        }
     }
 }

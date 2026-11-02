@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let manager = PresentationManager(environment: env)
         let menu = MenuBarController(manager: manager)
         AppHooks.menuItemFactories.append(HookSetupMenu.menuItemFactory)
+        AppHooks.menuItemFactories.append(CodexHookSetupMenu.menuItemFactory)
         menu.extraMenuItems = AppHooks.menuItemFactories
         menu.errorMessage = startupError
         environment = env

@@ -181,12 +181,32 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertEqual(r2.text.components(separatedBy: "\n").filter { $0.hasPrefix("Allow ") }.count, 1)
     }
 
+    func testZalgoClustersAreReplacedNotRejected() throws {
+        func shown(_ v: String) throws -> String {
+            var p = base("PermissionRequest"); p["tool_name"] = "Bash"; p["tool_input"] = ["command": v]
+            let (_, r) = try XCTUnwrap(ask(try a.translate(payload: payload(p))), "must still be offered")
+            return try XCTUnwrap(r.text.components(separatedBy: "\ncommand: ").last)
+        }
+        XCTAssertEqual(try shown("ls a" + String(repeating: "\u{0301}", count: 5) + "b"), "ls \u{FFFD}b")   // 5 marks
+        XCTAssertEqual(try shown("x a\u{20DD}b"), "x \u{FFFD}b")                                           // enclosing mark
+        XCTAssertEqual(try shown("x \u{0301}\u{0301}\u{0301}y"), "x\u{FFFD}y")                             // marks on a space
+        XCTAssertEqual(try shown("a" + String(repeating: "\u{0301}", count: 2) + "b"), "a\u{0301}\u{0301}b")  // 3 scalars ok
+        // legitimate text survives untouched
+        let ok = "caf\u{E9} cafe\u{301} \u{D55C}\u{AE00} \u{1112}\u{1161}\u{11AB} \u{1F44D}\u{1F3FD} \u{2764}\u{FE0F} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466} \u{1F1E6}\u{1F1F9}"
+        XCTAssertEqual(try shown(ok), ok)
+        // ZWJ outside an emoji sequence stays hidden-made-visible
+        XCTAssertEqual(try shown("a\u{200D}b"), "a\u{FFFD}b")
+        // clean() (one-line summaries) applies the same rule
+        XCTAssertEqual(ClaudeCodeAdapter.clean("a" + String(repeating: "\u{0301}", count: 5) + "b", max: 50), "\u{FFFD}b")
+    }
+
     func testZalgoGraphemeCannotSmuggleOverTheCap() throws {
         let zalgo = "a" + String(repeating: "\u{0301}", count: 6000)   // one Character, 6001 scalars
         XCTAssertEqual(zalgo.count, 1)
         var p = base("PermissionRequest"); p["tool_name"] = "Bash"; p["tool_input"] = ["command": zalgo]
-        let ev = try a.translate(payload: payload(p))
-        XCTAssertNil(ask(ev)); assertAttentionOnly(ev)
+        let (_, r) = try XCTUnwrap(ask(try a.translate(payload: payload(p))))   // replaced by one U+FFFD, not rejected
+        XCTAssertTrue(r.text.hasSuffix("command: \u{FFFD}"))
+        XCTAssertLessThan(r.text.unicodeScalars.count, 200)
     }
 
     func testKeyAtBoundaryAndLongKeyAndNestedValues() throws {
@@ -284,7 +304,7 @@ final class ClaudeCodeAdapterTests: XCTestCase {
     }
 
     func testRegistry() {
-        XCTAssertEqual(AdapterRegistry.make().keys.sorted(), ["claudeCode"])
+        XCTAssertNotNil(AdapterRegistry.make()["claudeCode"])
     }
 
     func testSideTableBounded() throws {

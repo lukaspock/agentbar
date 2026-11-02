@@ -78,6 +78,30 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                 ("s-charlie", "deploy.sh", .genericCLI, .error), ("s-delta", "Browser Agent", .computerUse, .working),
                 ("s-echo", "docs-site", .claudeCode, .idle), ("s-foxtrot", "data-sync", .codex, .done)]
             list = names.map { AgentSession(id: $0.0, name: $0.1, kind: $0.2, state: $0.3, supportsStop: $0.2 == .computerUse) }
+        case "groups", "arrive", "history":
+            var longHistory: [HistoryEntry] = []
+            for i in 0..<30 {
+                let ago = TimeInterval(1800 - i * 55)
+                let kind: HistoryEntry.Kind = i % 7 == 0 ? .request : (i % 11 == 10 ? .error : .action)
+                let text: String = i % 5 == 0 ? "Edited Sources/File\(i).swift and ran the whole test suite for this module again" : "Read File\(i).swift"
+                longHistory.append(h(ago, kind, text))
+            }
+            list = [AgentSession(id: "aaaa11-x", name: "notchy-app", kind: .claudeCode, state: .working, history: longHistory),
+                    AgentSession(id: "bbbb22-y", name: "notchy-app", kind: .claudeCode, state: name == "arrive" ? .working : .needsInput,
+                                 pendingRequests: name == "arrive" ? [] : [approval], history: claudeHistory),
+                    AgentSession(id: "cccc33-z", name: "Notchy-App", kind: .codex, state: .idle),
+                    AgentSession(id: "d1", name: "api-server", kind: .codex, state: .working),
+                    AgentSession(id: "e1", name: "docs-site", kind: .claudeCode, state: .done)]
+            if name == "history" { list = Array(list.prefix(1)) }
+            if name == "arrive" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, let i = self.sessions.firstIndex(where: { $0.id == "d1" }) else { return }
+                        self.sessions[i].pendingRequests = [approval]
+                        self.sessions[i].state = .needsInput
+                    }
+                }
+            }
         case "error":
             list = [AgentSession(id: "c", name: "deploy.sh", kind: .genericCLI, state: .error,
                                  history: [h(60, .action, "Uploading build"), h(5, .error, "Exit code 1: connection refused")]),

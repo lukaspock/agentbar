@@ -285,4 +285,41 @@ final class TransportTests: XCTestCase {
         let missing = await field(tok("\"op\":\"remove\""), "error")
         XCTAssertEqual(missing as? String, "invalid session")
     }
+
+    /// Regression (UI agent saw an orphaned "+1 more waiting"): a hook client that dies while its PermissionRequest
+    /// waits must cancel the request, also when several requests of the same session are pending, and the
+    /// session must not stay in needsInput.
+    func testPayloadClientDisconnectCancelsOnlyItsRequest() async {
+        let path = server.socketPath
+        let hook = tok("\"op\":\"payload\",\"adapter\":\"claudeCode\",\"payload\":{\"s\":\"orph\"}") + "\n"
+        let other = tok("\"op\":\"ask\",\"session\":\"orph\",\"requestId\":\"keep\",\"type\":\"info\",\"text\":\"t\"") + "\n"
+        let keeper = await detached { () -> RawClient? in
+            guard let c = RawClient(path: path) else { return nil }; c.send(other); return c }
+        await waitFor { self.store.pendingRequestCount == 1 }
+        let victim = await detached { () -> RawClient? in
+            guard let c = RawClient(path: path) else { return nil }; c.send(hook); return c }
+        await waitFor { self.store.pendingRequestCount == 2 }
+        XCTAssertEqual(store.pendingRequestCount, 2)
+        victim?.close_()
+        await waitFor { self.store.pendingRequestCount == 1 }
+        XCTAssertEqual(store.sessions.first?.pendingRequests.map(\.requestId), ["keep"])
+        XCTAssertEqual(store.sessions.first?.state, .needsInput)
+        keeper?.close_()
+        await waitFor { self.store.pendingRequestCount == 0 }
+        XCTAssertEqual(store.pendingRequestCount, 0)
+        XCTAssertEqual(store.sessions.first?.state, .working)
+    }
+
+    /// Client that sends the request and dies immediately (before the server even reached the wait loop).
+    func testImmediateDisconnectLeavesNoOrphan() async {
+        let path = server.socketPath
+        let hook = tok("\"op\":\"payload\",\"adapter\":\"claudeCode\",\"payload\":{\"s\":\"fast\"}") + "\n"
+        for _ in 0..<20 {
+            await detached { if let c = RawClient(path: path) { c.send(hook); c.close_() } }
+        }
+        await waitFor { self.store.pendingRequestCount == 0 }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(store.pendingRequestCount, 0)
+        XCTAssertNotEqual(store.sessions.first?.state, .needsInput)
+    }
 }

@@ -43,10 +43,16 @@ final class AppEnvironment {
     let backend: AppBackend
     private(set) var server: TransportServer?
     private var autoAnswerTask: Task<Void, Never>?
+    private(set) var attention: AttentionNotifier?
 
     init(options: LaunchOptions = .current) {
         self.options = options
         backend = options.demo ? .demo(FakeSessionStore.make(options: options)) : .live(SessionStore())
+        AttentionSettings.registerDefaults()
+        switch backend {
+        case .demo(let store): attention = AttentionNotifier(store: store)
+        case .live(let store): attention = AttentionNotifier(store: store)
+        }
     }
 
     /// Directory of socket + token. `AGENTBAR_DIR` (same variable the CLI honors) overrides the default.

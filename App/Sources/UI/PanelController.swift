@@ -64,6 +64,8 @@ final class PanelController<S: SessionStoreReading & ResponseSink> {
         model.$expanded.sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateOffset() }
         }.store(in: &bag)
+        NotificationCenter.default.publisher(for: .agentBarAutoExpand)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.model.autoExpand() } }.store(in: &bag)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.reposition() }.store(in: &bag)
     }

@@ -34,6 +34,8 @@ public final class TransportServer: @unchecked Sendable {
     private var connections = Set<Int32>()
     private var acceptDone: DispatchSemaphore?
     static let maxConnections = 512
+    /// The kernel clamps this to kern.ipc.somaxconn; the CLI additionally retries a refused connect (burst load).
+    static let listenBacklog: Int32 = 1024
     private static let readDeadline: TimeInterval = 15
 
     public init(store: SessionStore, adapters: [String: AgentAdapter] = [:],
@@ -50,6 +52,9 @@ public final class TransportServer: @unchecked Sendable {
     public func start() throws {
         lock.lock(); defer { lock.unlock() }
         guard !running else { return }
+        // A client that dies right after connecting makes SO_NOSIGPIPE fail (EINVAL on a reset socket) and the reply
+        // write would then raise SIGPIPE and kill the whole app. Ignore it process-wide.
+        signal(SIGPIPE, SIG_IGN)
 
         // Directory 0700, owned by us.
         let dirPath = directory.path
@@ -87,7 +92,7 @@ public final class TransportServer: @unchecked Sendable {
         umask(oldMask)
         guard let rc = bound else { close(fd); throw ServerError.pathTooLong }
         guard rc == 0 else { let e = errno; close(fd); throw ServerError.system("bind", e) }
-        guard chmod(sockPath, 0o600) == 0, listen(fd, 128) == 0 else {
+        guard chmod(sockPath, 0o600) == 0, listen(fd, Self.listenBacklog) == 0 else {
             let e = errno; close(fd); unlink(sockPath); throw ServerError.system("listen", e)
         }
 

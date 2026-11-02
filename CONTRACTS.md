@@ -104,3 +104,25 @@ cwd: <cwd>                       (only if present)
   restarts its 0.5 s window), `layoutChanged(now:)` on panel height/expansion changes (disarms all cards for 0.5 s),
   `isArmed(requestId, currentOrder:, now:)` called at click time with the CURRENT order; false for unknown cards, cards whose index changed, or inside
   `settleInterval` (0.5 s). Buttons are disabled/dimmed while not armed. The answer must use the requestId of the drawn card, never "first pending".
+
+## Phase 2: `agentbar run` (GenericCLI) + transport hardening
+`agentbar run --session ID [--name N] [--log] -- <cmd> [args...]`
+- Starts `<cmd>` (PATH lookup, posix_spawn, signal dispositions reset) with inherited stdin/stderr. Sends `update` (kind `genericCLI`, state
+  `working`, action `running: <cmd>`) before the start. Exit code of the CLI = exit code of the command (signal death = 128+n; not found 127,
+  not executable 126; usage errors 4).
+- End state by exit: 0 => `end` (done) + status log `exit 0`; signal we forwarded (stop) => `end` + status log `stopped (...)`;
+  anything else => `update state=error action="exit N"` + error log.
+- `--log`: the command's stdout goes through a pipe (it is then NOT a tty for the child), is passed through verbatim, and each non-empty line
+  is sent as a `log` entry of kind `action` (max 300 lines per run, 500 chars each). Without `--log` stdout is inherited unchanged.
+- Signals: SIGTERM/SIGHUP are forwarded to the child. SIGINT/SIGQUIT are forwarded unless `run` is in the foreground of a tty (then the
+  terminal's Ctrl-C already reaches the whole process group; no double signal). `run` itself waits for the child, then exits with its code.
+- The app is never required: notifications run on a background queue, each bounded to 5 s; once the app is unreachable, log lines are dropped
+  and the command runs undisturbed. Final flush waits at most 8 s.
+- `agentbar hook ... --argv JSON` takes the payload from the argument instead of stdin (Codex `notify`).
+- `GenericCLIAdapter` (`agentbar hook --adapter genericCLI`, payload `{session,name?,state?,action?,log?:{kind,text}}`): never blocks,
+  never creates requests, `state:"done"` ends the session, output is always empty. `request`/`answer` log kinds are ignored (cannot be forged).
+
+Transport changes: listen backlog 1024 (kernel-clamped); the CLI retries a refused connect up to 4 times (50..200 ms) when the socket file exists
+(burst load); the server ignores SIGPIPE process-wide (a client dying right after connect used to be able to kill the app via the reply write).
+Client disconnect while `ask`/`payload` waits cancels exactly that request (tests: payload disconnect with a second pending request, 20x instant
+disconnect, e2e SIGKILL of a hook client).

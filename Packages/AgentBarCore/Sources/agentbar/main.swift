@@ -17,7 +17,9 @@ usage:
   agentbar log --session ID --kind K --text T
   agentbar end --session ID
   agentbar remove --session ID            (removes the session; its pending asks return "cancelled")
-  agentbar hook --adapter claudeCode      (reads hook JSON on stdin)
+  agentbar hook --adapter claudeCode|codex|genericCLI [--argv JSON]   (reads hook JSON on stdin, or from --argv)
+  agentbar run --session ID [--name N] [--log] -- <cmd> [args...]
+                                          (runs cmd; session working -> done/error by exit code; --log forwards stdout lines)
 
 """
 
@@ -81,8 +83,15 @@ func connectSocket(_ dir: String) -> Int32? {
     // Non-blocking connect bounded by connectTimeout so a wedged server (full backlog) can never hang a hook.
     let flags = fcntl(fd, F_GETFL)
     _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
-    var rc = withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+    var rc: Int32 = -1
+    // ECONNREFUSED is also what a full listen backlog looks like under burst load: retry briefly (max ~0.5 s total).
+    // An absent app (ENOENT) or a stale socket fails on the first or last try without noticeable delay.
+    for attempt in 0..<5 {
+        rc = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        if rc == 0 || errno != ECONNREFUSED || !FileManager.default.fileExists(atPath: path) { break }
+        usleep(UInt32(50_000 * (attempt + 1)))
     }
     if rc != 0 && (errno == EINPROGRESS || errno == EAGAIN) {
         var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
@@ -203,7 +212,9 @@ func runAsk(_ a: Args) -> Int32 {
 func runHook(_ a: Args) -> Int32 {
     guard let adapter = a.one("adapter") else { return 0 }
     var input = Data()
-    while input.count <= 4 * 1024 * 1024 {
+    // `--argv <json>`: payload given as an argument (e.g. Codex `notify`) instead of stdin.
+    if let inline = a.one("argv") { input = Data(inline.utf8) }
+    while a.one("argv") == nil && input.count <= 4 * 1024 * 1024 {
         let d = FileHandle.standardInput.availableData
         if d.isEmpty { break }
         input.append(d)
@@ -218,10 +229,181 @@ func runHook(_ a: Args) -> Int32 {
     return 0
 }
 
+// MARK: run (generic CLI wrapper)
+
+/// Fire-and-forget notifications to the app on a serial queue: a missing or hung app never delays the wrapped command.
+/// After the first unreachable result, log lines are dropped (state changes are still retried).
+final class Notifier: @unchecked Sendable {
+    private let q = DispatchQueue(label: "agentbar.run.notify")
+    private let dir = defaultDir()
+    private var down = false   // only touched on `q`
+    let session: String
+
+    init(session: String) { self.session = session }
+
+    private func send(_ op: String, _ extra: [String: Any], droppable: Bool = false) {
+        var r = extra; r["op"] = op; r["session"] = session
+        let frozen = UncheckedBox(r)
+        q.async { [self] in
+            if droppable && down { return }
+            if case .reply = roundTrip(frozen.value, dir: dir, replyTimeout: nonBlockingReplyTimeout) { down = false } else { down = true }
+        }
+    }
+    func update(_ extra: [String: Any]) { send("update", extra) }
+    func log(_ kind: String, _ text: String) { send("log", ["kind": kind, "text": text], droppable: true) }
+    func end() { send("end", [:]) }
+    /// Waits (bounded) until everything queued so far was sent.
+    func flush(timeout: TimeInterval = 8) {
+        let sem = DispatchSemaphore(value: 0)
+        q.async { sem.signal() }
+        _ = sem.wait(timeout: .now() + timeout)
+    }
+}
+
+nonisolated(unsafe) var runChildPid: pid_t = 0
+
+func runWrapped(_ rawArgs: [String]) -> Int32 {
+    guard let sep = rawArgs.firstIndex(of: "--") else { err("agentbar: run needs '-- <cmd>'"); err(usage); return Exit.invalid }
+    let cmd = Array(rawArgs[(sep + 1)...])
+    guard !cmd.isEmpty, let a = parseArgs(Array(rawArgs[..<sep]).map { $0 == "--log" ? "--log=1" : $0 }),
+          let session = a.one("session"), !session.isEmpty else {
+        err("agentbar: run needs --session ID and a command after '--'"); return Exit.invalid
+    }
+    let forwardLines = a.one("log") != nil
+    let name = a.one("name") ?? (cmd[0] as NSString).lastPathComponent
+    let notifier = Notifier(session: session)
+    let shown = cmd.joined(separator: " ")
+    let action = "running: " + (shown.count > 120 ? String(shown.prefix(120)) + "…" : shown)
+    notifier.update(["name": name, "kind": "genericCLI", "state": "working", "action": action])
+
+    // Signals: reset to default for the child (SIG_IGN would be inherited across exec), handled here via dispatch sources.
+    let sigs: [Int32] = [SIGINT, SIGTERM, SIGHUP, SIGQUIT]
+    var attr: posix_spawnattr_t? = nil
+    posix_spawnattr_init(&attr)
+    var defaults = sigset_t(); sigemptyset(&defaults)
+    for s in sigs { sigaddset(&defaults, s) }
+    var empty = sigset_t(); sigemptyset(&empty)
+    posix_spawnattr_setsigdefault(&attr, &defaults)
+    posix_spawnattr_setsigmask(&attr, &empty)
+    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+    defer { posix_spawnattr_destroy(&attr) }
+
+    var actions: posix_spawn_file_actions_t? = nil
+    posix_spawn_file_actions_init(&actions)
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    var pipeFds: [Int32] = [-1, -1]
+    if forwardLines {
+        guard pipe(&pipeFds) == 0 else { err("agentbar: pipe failed"); return 1 }
+        posix_spawn_file_actions_adddup2(&actions, pipeFds[1], 1)
+        posix_spawn_file_actions_addclose(&actions, pipeFds[0])
+        posix_spawn_file_actions_addclose(&actions, pipeFds[1])
+    }
+
+    var pid: pid_t = 0
+    let argvC: [UnsafeMutablePointer<CChar>?] = cmd.map { strdup($0) } + [nil]
+    defer { for p in argvC { free(p) } }
+    let spawnRc = posix_spawnp(&pid, cmd[0], &actions, &attr, argvC, environ)
+    if forwardLines { close(pipeFds[1]) }
+    guard spawnRc == 0 else {
+        if forwardLines { close(pipeFds[0]) }
+        let code: Int32 = (spawnRc == ENOENT) ? 127 : 126
+        err("agentbar: cannot run '\(cmd[0])': \(String(cString: strerror(spawnRc)))")
+        notifier.update(["state": "error", "action": "cannot start: \(cmd[0])"])
+        notifier.log("error", "cannot start '\(cmd[0])': \(String(cString: strerror(spawnRc)))")
+        notifier.flush()
+        return code
+    }
+    runChildPid = pid
+
+    // Forward signals to the child once. Terminal Ctrl-C already reaches the whole foreground process group
+    // (including the child), so SIGINT/SIGQUIT are not forwarded again when we are in the foreground of a tty.
+    let inForegroundOfTTY = isatty(0) == 1 && tcgetpgrp(0) == getpgrp()
+    var sources: [DispatchSourceSignal] = []
+    let interrupted = ManagedFlag()
+    for s in sigs {
+        signal(s, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: s, queue: .global())
+        src.setEventHandler {
+            interrupted.set(s)
+            if (s == SIGINT || s == SIGQUIT) && inForegroundOfTTY { return }
+            if runChildPid > 0 { kill(runChildPid, s) }
+        }
+        src.resume()
+        sources.append(src)
+    }
+
+    // stdout -> our stdout (verbatim) and, line by line, to the app (bounded).
+    var logThread: Thread?
+    let logDone = DispatchSemaphore(value: 0)
+    if forwardLines {
+        let rfd = pipeFds[0]
+        let t = Thread {
+            var pending = Data(); var chunk = [UInt8](repeating: 0, count: 8192); var sent = 0
+            func emit(_ line: Data) {
+                guard sent < 300, var text = String(data: line, encoding: .utf8) else { return }
+                text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+                sent += 1
+                notifier.log("action", text.count > 500 ? String(text.prefix(500)) + "…" : text)
+            }
+            while true {
+                let n = read(rfd, &chunk, chunk.count)
+                if n < 0 { if errno == EINTR { continue }; break }
+                if n == 0 { break }
+                FileHandle.standardOutput.write(Data(chunk[0..<n]))
+                pending.append(contentsOf: chunk[0..<n])
+                while let nl = pending.firstIndex(of: 0x0A) {
+                    emit(pending[pending.startIndex..<nl]); pending = Data(pending[(nl + 1)...])
+                }
+                if pending.count > 8192 { emit(pending); pending = Data() }
+            }
+            if !pending.isEmpty { emit(pending) }
+            close(rfd)
+            logDone.signal()
+        }
+        t.start(); logThread = t
+    }
+
+    var status: Int32 = 0
+    while waitpid(pid, &status, 0) < 0 { if errno != EINTR { status = 1 << 8; break } }
+    runChildPid = 0
+    if logThread != nil { _ = logDone.wait(timeout: .now() + 2) }
+    for src in sources { src.cancel() }
+
+    let exitCode: Int32
+    var sigName: String?
+    if (status & 0x7f) == 0 { exitCode = (status >> 8) & 0xff }
+    else if (status & 0x7f) != 0x7f { let sg = status & 0x7f; exitCode = 128 + sg; sigName = String(cString: strsignal(sg)) }
+    else { exitCode = 1 }
+
+    if exitCode == 0 {
+        notifier.log("status", "exit 0")
+        notifier.end()
+    } else if let sigName, interrupted.value != 0 {
+        notifier.log("status", "stopped (\(sigName))")
+        notifier.end()
+    } else {
+        let why = sigName.map { "killed: \($0)" } ?? "exit \(exitCode)"
+        notifier.log("error", why)
+        notifier.update(["state": "error", "action": why])
+    }
+    notifier.flush()
+    return exitCode
+}
+
+final class UncheckedBox<T>: @unchecked Sendable { let value: T; init(_ v: T) { value = v } }
+
+final class ManagedFlag: @unchecked Sendable {
+    private let l = NSLock(); private var v: Int32 = 0
+    func set(_ x: Int32) { l.lock(); v = x; l.unlock() }
+    var value: Int32 { l.lock(); defer { l.unlock() }; return v }
+}
+
 // MARK: Main
 
 let argv = Array(CommandLine.arguments.dropFirst())
 guard let cmd = argv.first else { err(usage); exit(Exit.invalid) }
+if cmd == "run" { exit(runWrapped(Array(argv.dropFirst()))) }
 guard let args = parseArgs(Array(argv.dropFirst())) else {
     if cmd == "hook" { exit(0) }
     err(usage); exit(Exit.invalid)

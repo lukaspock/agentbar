@@ -120,6 +120,38 @@ check "hook invalid payload silent" "0:" "$RC:$OUT"
 OUT=$(echo 'not json at all' | "$CLI" hook --adapter claudeCode); RC=$?
 check "hook non-json stdin silent" "0:" "$RC:$OUT"
 
+# hook client killed (SIGKILL) while a PermissionRequest waits => request cancelled, no orphan
+echo '{"session_id":"hold-kill","tool_name":"Bash"}' | "$CLI" hook --adapter claudeCode >/dev/null 2>&1 &
+P=$!
+wait_state pending 1; check "hook pending while waiting" 1 "$(state pending)"
+kill -9 $P; wait $P 2>/dev/null
+wait_state pending 0; check "hook killed => request cancelled" 0 "$(state pending)"
+
+# burst: 150 parallel updates must all reach the server (backlog + client connect retry)
+BEFORE=$(state sessions)
+for i in $(seq 1 150); do ( "$CLI" update --session "burst-$((i % 50))" --state working >/dev/null 2>&1; echo $? >> "$D/burst.rc" ) & done; wait $(jobs -p | grep -v "^$HOSTPID$") 2>/dev/null
+check "burst: all 150 exit 0" 150 "$(grep -c '^0$' "$D/burst.rc")"
+
+# run wrapper
+RUNOUT=$("$CLI" run --session run-ok --name RunOk --log -- sh -c 'echo one; echo two'); RC=$?
+check "run: exit 0 passthrough" 0 $RC
+check "run: stdout passed through" "one two" "$(echo $RUNOUT)"
+"$CLI" run --session run-fail -- sh -c 'exit 7'; check "run: exit code passthrough" 7 $?
+"$CLI" run --session run-nf -- definitely-not-a-command-xyz 2>/dev/null; check "run: command not found exit 127" 127 $?
+"$CLI" run --session 2>/dev/null; check "run: missing command exit 4" 4 $?
+"$CLI" run --session x -- 2>/dev/null; check "run: empty command exit 4" 4 $?
+"$CLI" run --session run-term -- sleep 30 & P=$!; BGPIDS="$BGPIDS $P"
+sleep 0.7; kill -TERM $P; wait $P 2>/dev/null; check "run: SIGTERM forwarded (exit 143)" 143 $?
+"$CLI" run --session run-int -- sh -c 'trap "exit 9" INT; sleep 5 & wait' & P=$!; BGPIDS="$BGPIDS $P"
+sleep 0.7; kill -INT $P; wait $P 2>/dev/null; check "run: SIGINT forwarded to child handler (exit 9)" 9 $?
+wait_state aggregate error; check "run: failed child => session error" error "$(state aggregate)"
+OUT=$(AGENTBAR_DIR="$GONE" "$CLI" run --session run-gone --log -- sh -c 'echo alive; exit 5'); RC=$?
+check "run: app absent, command still runs, exit passthrough" "5:alive" "$RC:$OUT"
+T0=$(date +%s); AGENTBAR_DIR="$GONE" "$CLI" run --session run-gone -- true; RC=$?; T1=$(date +%s)
+check "run: app absent not slow" yes "$([ $RC -eq 0 ] && [ $((T1-T0)) -le 3 ] && echo yes || echo no)"
+
+OUT=$("$CLI" hook --adapter claudeCode --argv '{"garbage":true}'); check "hook --argv invalid payload silent" "0:" "$?:$OUT"
+
 # app absent
 OUT=$(echo '{"session_id":"a","tool_name":"Bash"}' | AGENTBAR_DIR="$GONE" "$CLI" hook --adapter claudeCode 2>&1); RC=$?
 check "hook app absent: silent, exit 0" "0:" "$RC:$OUT"

@@ -55,9 +55,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         styleItem.submenu = sub
         menu.addItem(styleItem)
+        menu.addItem(toggleItem("Sound on new request", on: AttentionSettings.soundEnabled, action: #selector(toggleSound)))
+        menu.addItem(toggleItem("Auto-expand on new request", on: AttentionSettings.autoExpandEnabled, action: #selector(toggleAutoExpand)))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit AgentBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
+
+    private func toggleItem(_ title: String, on: Bool, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.state = on ? .on : .off
+        return item
+    }
+
+    @objc private func toggleSound() { AttentionSettings.soundEnabled.toggle() }
+    @objc private func toggleAutoExpand() { AttentionSettings.autoExpandEnabled.toggle() }
 
     @objc private func selectStyle(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let style = PresentationStyle(rawValue: raw) else { return }
