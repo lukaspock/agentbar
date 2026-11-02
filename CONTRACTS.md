@@ -88,11 +88,15 @@ cwd: <cwd>                       (only if present)
   <continuation line>            further lines of a value are indented by 2 spaces
 ```
 - Values: strings as is; numbers/bools/null/nested objects as compact JSON (sorted keys, no escaped slashes). Empty value => `(leer)`.
-- Sanitizing: CR/LF/U+2028/2029/NEL are line breaks (max 2 in a row); tabs become spaces; control, format (zero-width, bidi, tag), private-use,
-  unassigned, surrogate, variation selectors, CGJ, Hangul fillers, braille blank become a visible U+FFFD; other space separators become " ".
-  The indentation makes it impossible for a value to forge a `key:` line. Header fields (tool, project, cwd) are single line.
+- Sanitizing: CR/LF/U+2028/2029/NEL are line breaks (max 2 in a row); tabs become spaces; other space separators become " ".
+  Single hidden scalars (control, format incl. zero-width/bidi/tag, private-use, unassigned, surrogate, variation selectors, CGJ, Hangul fillers,
+  braille blank) become a visible U+FFFD while the base character stays visible. Grapheme-cluster rule: max 3 scalars per cluster; emoji
+  sequences (ZWJ, VS16, skin tones, flags, up to 12 scalars) are kept. A cluster with more marks, an enclosing mark, or starting with a mark is
+  replaced by one U+FFFD in `clean()` (display-only text). **In approvals this fails closed** (see below): the base character would vanish, so the
+  display would differ from the real input.
+  The 2-space indentation makes it impossible for a value to forge a `key:` line. Header fields (tool, project, cwd) are single line.
 - **Truncation rule: never cut, never summarise.** If the full text would exceed `ClaudeCodeAdapter.maxApprovalText` (= 4000 - 100, measured in
-  Characters AND unicode scalars), or a key is empty/longer than 60, the tool name is empty/longer than 60, or `tool_input` is missing/empty/not an
+  Characters AND unicode scalars), or any tool/project/cwd/key/value contains a collapsing cluster (reason "unlesbare Zeichen"), or a key is empty/longer than 60, the tool name is empty/longer than 60, or `tool_input` is missing/empty/not an
   object, then NO request is created. `translate` returns only `sessionUpdate(state: needsInput, action: "<tool>: <reason> … [gekürzt, im Terminal prüfen]")`
   plus a status log entry; the transport answers the hook with `{"ok":true,"output":""}` (empty), so Claude Code shows its own dialog.
   The store cap (4000) therefore never shortens an approval text (tested).

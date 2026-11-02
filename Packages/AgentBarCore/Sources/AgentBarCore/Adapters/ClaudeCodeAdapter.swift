@@ -116,6 +116,8 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
     static func renderApproval(tool: String?, cwd: String?, project: String, input: Any?)
         -> (text: String?, reason: String) {
         let limit = maxApprovalText
+        let unreadable = "unlesbare Zeichen"
+        if hasCollapsedCluster(tool ?? "") || hasCollapsedCluster(project) || hasCollapsedCluster(cwd ?? "") { return (nil, unreadable) }
         let toolRaw = singleLine(tool ?? "")
         guard !toolRaw.isEmpty else { return (nil, "unbekanntes Tool") }
         guard toolRaw.count <= 60 else { return (nil, "Toolname zu lang") }
@@ -126,9 +128,11 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         func size(_ str: String) -> Int { max(str.count, str.unicodeScalars.count) }
         var total = size(lines.joined(separator: "\n"))
         for key in dict.keys.sorted() {
+            let rawValue = valueString(dict[key])
+            if hasCollapsedCluster(key) || hasCollapsedCluster(rawValue) { return (nil, unreadable) }
             let k = singleLine(key)
             guard !k.isEmpty, k.count <= 60 else { return (nil, "Parametername nicht darstellbar") }
-            var v = multiLine(valueString(dict[key]))
+            var v = multiLine(rawValue)
             if v.isEmpty { v = "(leer)" }
             let entry = "\(k): " + v.replacingOccurrences(of: "\n", with: "\n  ")
             total += size(entry) + 1
@@ -190,15 +194,30 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
             let sc = Array(ch.unicodeScalars)
             if sc.count == 1 || ch == "\r\n" { res.append(contentsOf: sc.map { ($0, false) }); continue }
             if isEmojiSequence(sc) { res.append(contentsOf: sc.map { ($0, true) }); continue }
-            let first = sc[0].properties.generalCategory
-            let leadingMark = first == .nonspacingMark || first == .spacingMark || first == .enclosingMark
-            if leadingMark || sc.count > maxClusterScalars || sc.contains(where: { $0.properties.generalCategory == .enclosingMark }) {
+            if collapses(sc) {
                 res.append(("\u{FFFD}", false))
             } else {
                 res.append(contentsOf: sc.map { ($0, false) })
             }
         }
         return res
+    }
+
+    /// True for a (non-emoji) cluster that `units` replaces by U+FFFD: the base character would vanish from the display.
+    private static func collapses(_ sc: [Unicode.Scalar]) -> Bool {
+        let first = sc[0].properties.generalCategory
+        let leadingMark = first == .nonspacingMark || first == .spacingMark || first == .enclosingMark
+        return leadingMark || sc.count > maxClusterScalars || sc.contains { $0.properties.generalCategory == .enclosingMark }
+    }
+
+    /// True if sanitizing `s` would collapse any cluster. Approvals must fail closed on this (display != real input).
+    static func hasCollapsedCluster(_ s: String) -> Bool {
+        for ch in s {
+            let sc = Array(ch.unicodeScalars)
+            if sc.count == 1 || ch == "\r\n" || isEmojiSequence(sc) { continue }
+            if collapses(sc) { return true }
+        }
+        return false
     }
 
     private static func isEmojiSequence(_ sc: [Unicode.Scalar]) -> Bool {

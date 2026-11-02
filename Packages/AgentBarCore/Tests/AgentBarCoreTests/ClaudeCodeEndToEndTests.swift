@@ -137,7 +137,8 @@ final class ClaudeCodeEndToEndTests: XCTestCase {
         let r = startResponder(policy: "allow")   // would allow anything that is offered
         defer { r.cancel() }
         let long = ["command": String(repeating: "echo safe; ", count: 600) + "rm -rf ~"]
-        for input in [long as Any, [String: Any]()] {
+        let zalgo = ["command": "r" + String(repeating: "\u{0301}", count: 5) + "m -rf ~"]
+        for input in [long as Any, [String: Any](), zalgo] {
             let (rc, out, _) = await hook(fixture(["tool_name": "Bash", "tool_input": input]))
             XCTAssertEqual(rc, 0); XCTAssertEqual(out, "", "no decision for non-displayable input")
             let s = try XCTUnwrap(store.sessions.first { $0.id == "e2e-1" })

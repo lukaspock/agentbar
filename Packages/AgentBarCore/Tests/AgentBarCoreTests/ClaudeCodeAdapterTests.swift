@@ -104,7 +104,7 @@ final class ClaudeCodeAdapterTests: XCTestCase {
     }
 
     /// no ask => the transport answers with empty output => Claude Code shows its own dialog
-    func assertAttentionOnly(_ ev: [CoreEvent], file: StaticString = #filePath, line: UInt = #line) {
+    func assertAttentionOnly(_ ev: [CoreEvent], suffix: String? = "[gekürzt, im Terminal prüfen]", file: StaticString = #filePath, line: UInt = #line) {
         guard case let .sessionUpdate(_, _, _, state, action, _) = ev.first else { return XCTFail("no update", file: file, line: line) }
         XCTAssertEqual(state, .needsInput, file: file, line: line)
         XCTAssertTrue(action?.hasSuffix("[gekürzt, im Terminal prüfen]") ?? false, action ?? "nil", file: file, line: line)
@@ -181,32 +181,41 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertEqual(r2.text.components(separatedBy: "\n").filter { $0.hasPrefix("Allow ") }.count, 1)
     }
 
-    func testZalgoClustersAreReplacedNotRejected() throws {
-        func shown(_ v: String) throws -> String {
-            var p = base("PermissionRequest"); p["tool_name"] = "Bash"; p["tool_input"] = ["command": v]
-            let (_, r) = try XCTUnwrap(ask(try a.translate(payload: payload(p))), "must still be offered")
-            return try XCTUnwrap(r.text.components(separatedBy: "\ncommand: ").last)
+    func testCollapsedClusterFailsClosedInApprovals() throws {
+        func offered(_ v: Any, key: String = "command", tool: String = "Bash", cwd: String = "/tmp/p") throws -> (String, AgentRequest)? {
+            var p = base("PermissionRequest"); p["tool_name"] = tool; p["cwd"] = cwd; p["tool_input"] = [key: v]
+            return ask(try a.translate(payload: payload(p)))
         }
-        XCTAssertEqual(try shown("ls a" + String(repeating: "\u{0301}", count: 5) + "b"), "ls \u{FFFD}b")   // 5 marks
-        XCTAssertEqual(try shown("x a\u{20DD}b"), "x \u{FFFD}b")                                           // enclosing mark
-        XCTAssertEqual(try shown("x \u{0301}\u{0301}\u{0301}y"), "x\u{FFFD}y")                             // marks on a space
-        XCTAssertEqual(try shown("a" + String(repeating: "\u{0301}", count: 2) + "b"), "a\u{0301}\u{0301}b")  // 3 scalars ok
+        let marks5 = String(repeating: "\u{0301}", count: 5)
+        for bad in ["r" + marks5, "ls a\u{20DD}b", "x \u{0301}\u{0301}\u{0301}y", "rm -rf ~ r" + marks5 + " && true"] {
+            var p = base("PermissionRequest"); p["tool_name"] = "Bash"; p["tool_input"] = ["command": bad]
+            let ev = try a.translate(payload: payload(p))
+            XCTAssertNil(ask(ev), "must fail closed: \(bad.unicodeScalars.count) scalars")
+            guard case let .sessionUpdate(_, _, _, st, act, _) = ev.first else { return XCTFail() }
+            XCTAssertEqual(st, .needsInput); XCTAssertTrue(act?.contains("unlesbare Zeichen") ?? false, act ?? "")
+        }
+        // nested value, key, tool name, cwd
+        XCTAssertNil(try offered(["a": "r" + marks5]))
+        XCTAssertNil(try offered("v", key: "k" + marks5))
+        XCTAssertNil(try offered("v", tool: "B" + marks5))
+        XCTAssertNil(try offered("v", cwd: "/tmp/r" + marks5))
+        // 3 scalars and single hidden scalars are still shown (hidden one made visible)
+        XCTAssertEqual(try offered("a\u{0301}\u{0301}b")?.1.text.hasSuffix("command: a\u{0301}\u{0301}b"), true)
+        XCTAssertEqual(try offered("a\u{200B}b")?.1.text.hasSuffix("command: a\u{FFFD}b"), true)
         // legitimate text survives untouched
         let ok = "caf\u{E9} cafe\u{301} \u{D55C}\u{AE00} \u{1112}\u{1161}\u{11AB} \u{1F44D}\u{1F3FD} \u{2764}\u{FE0F} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466} \u{1F1E6}\u{1F1F9}"
-        XCTAssertEqual(try shown(ok), ok)
-        // ZWJ outside an emoji sequence stays hidden-made-visible
-        XCTAssertEqual(try shown("a\u{200D}b"), "a\u{FFFD}b")
-        // clean() (one-line summaries) applies the same rule
-        XCTAssertEqual(ClaudeCodeAdapter.clean("a" + String(repeating: "\u{0301}", count: 5) + "b", max: 50), "\u{FFFD}b")
+        XCTAssertEqual(try offered(ok)?.1.text.hasSuffix("command: " + ok), true)
+        XCTAssertEqual(try offered("a\u{200D}b")?.1.text.hasSuffix("command: a\u{FFFD}b"), true)
+        // clean() is display-only: replacement is enough
+        XCTAssertEqual(ClaudeCodeAdapter.clean("a" + marks5 + "b", max: 50), "\u{FFFD}b")
     }
 
     func testZalgoGraphemeCannotSmuggleOverTheCap() throws {
         let zalgo = "a" + String(repeating: "\u{0301}", count: 6000)   // one Character, 6001 scalars
         XCTAssertEqual(zalgo.count, 1)
         var p = base("PermissionRequest"); p["tool_name"] = "Bash"; p["tool_input"] = ["command": zalgo]
-        let (_, r) = try XCTUnwrap(ask(try a.translate(payload: payload(p))))   // replaced by one U+FFFD, not rejected
-        XCTAssertTrue(r.text.hasSuffix("command: \u{FFFD}"))
-        XCTAssertLessThan(r.text.unicodeScalars.count, 200)
+        let ev = try a.translate(payload: payload(p))
+        XCTAssertNil(ask(ev)); assertAttentionOnly(ev, suffix: nil)
     }
 
     func testKeyAtBoundaryAndLongKeyAndNestedValues() throws {
