@@ -265,6 +265,7 @@ public final class TransportServer: @unchecked Sendable {
         guard let op = str(req, "op") else { return Self.error("missing op") }
 
         if op == "payload" { return processPayload(req, fd: fd) }
+        if op == "watch" { return processWatch(req, fd: fd) }
 
         guard let session = str(req, "session"), !session.isEmpty, session.count <= AgentBarLimits.maxIdLength else {
             return Self.error("invalid session")
@@ -360,6 +361,29 @@ public final class TransportServer: @unchecked Sendable {
             let rid = request.requestId
             onMain { [store] in store.apply(.cancelRequest(sessionId: session, requestId: rid)) }
             return nil
+        }
+    }
+
+    /// `watch`: long-lived connection of a session's controller (`agentbar run` / `agentbar watch`). The server sends one
+    /// JSON line `{"ok":true,"event":"watching"}`, then `{"ok":true,"event":"stop|pause|resume"}` whenever the app
+    /// issues that command for the session. `stop` is terminal (connection closed afterwards). Always returns nil.
+    private func processWatch(_ req: [String: Any], fd: Int32) -> [String: Any]? {
+        guard let session = str(req, "session"), !session.isEmpty, session.count <= AgentBarLimits.maxIdLength else {
+            return Self.error("invalid session")
+        }
+        let queue = CommandQueue()
+        let token = onMain { [store] in
+            store.addCommandObserver { sid, cmd in if sid == session { queue.push(cmd) } }
+        }
+        defer { onMain { [store] in store.removeCommandObserver(token) } }
+        reply(fd, ["ok": true, "event": "watching"])
+        while true {
+            switch queue.wait(clientFd: fd) {
+            case .disconnected: return nil
+            case .command(let c):
+                reply(fd, ["ok": true, "event": c.rawValue])
+                if c == .stop { return nil }
+            }
         }
     }
 

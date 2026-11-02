@@ -130,3 +130,20 @@ Transport changes: listen backlog 1024 (kernel-clamped); the CLI retries a refus
 (burst load); the server ignores SIGPIPE process-wide (a client dying right after connect used to be able to kill the app via the reply write).
 Client disconnect while `ask`/`payload` waits cancels exactly that request (tests: payload disconnect with a second pending request, 20x instant
 disconnect, e2e SIGKILL of a hook client).
+
+## Phase 3: stop channel (app -> CLI) and ComputerUse adapter
+- Wire op `watch` (`{"token","op":"watch","session":ID}`): long-lived connection. Server replies `{"ok":true,"event":"watching"}`, then one line
+  `{"ok":true,"event":"pause"|"resume"|"stop"}` per command the app issues for that session (`SessionStore.pause/resume/stop(sessionId:)`;
+  `stop` is also `ResponseSink.stop`). After `stop` the server closes the connection. Commands for unknown sessions are dropped.
+  Disconnect unregisters the observer. `SessionStore.addCommandObserver/removeCommandObserver` + `AgentCommand` are the in-process API;
+  `stopHandler` is still called on stop. No confirmation anywhere; the history gets a status entry `stop requested`.
+- `agentbar run`: sets `supportsStop` true, keeps a watch connection (reconnects every 2 s while the child lives, re-announcing supportsStop).
+  stop -> SIGTERM (+SIGCONT) to the child, ends as `stopped (...)`/`end`; pause/resume -> SIGSTOP/SIGCONT, action `paused: <cmd>`.
+  supportsStop is reset on end and on error exit (the store also clears it on `end`).
+- `agentbar watch --session ID`: prints `pause`/`resume`/`stop` lines, exit 0 after stop, 3 if the app is/gets unreachable. For agents that
+  are not wrapped by `run` (computer-use agents run it in the background and obey the lines).
+- `ComputerUseAdapter` (`agentbar hook --adapter computerUse`, kind `computerUse`): payload `{session,name?,state?,action?,supportsStop?,log?:{kind,text}}`.
+  `action` -> `currentAction` (plain text, <= 300 chars, ClaudeCodeAdapter.clean rules, empty string clears it). Never creates requests (no
+  one-click-allow path), `state:"done"` ends the session, output always empty, forged `request`/`answer` logs ignored. Via `update --action` the
+  store applies the same sanitizing for sessions of kind `computerUse`.
+- Pause is not in the frozen `ResponseSink`; UI can call `SessionStore.pause/resume` directly (state stays unchanged, the agent reports `paused` via action).

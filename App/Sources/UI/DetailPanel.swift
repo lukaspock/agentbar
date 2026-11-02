@@ -32,6 +32,7 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
     @ObservedObject var model: BarViewModel
     @Binding var contentHeight: CGFloat
     @StateObject private var guardModel = ApprovalGuardModel()
+    @ObservedObject private var hub = ChatHub.shared
 
     /// One card per session (its oldest request), ordered oldest request first; independent of session state.
     private var openRequests: [(sessionId: String, request: AgentRequest)] {
@@ -112,7 +113,13 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                     .transition(.opacity)
                 }
             }
-            if let selected, !selected.history.isEmpty { HistoryList(session: selected) }
+            if let selected {
+                if hub.supportsChat(selected), let backend = hub.backend {
+                    ChatPanel(session: selected, backend: backend, sink: store, model: model)
+                } else if !selected.history.isEmpty {
+                    HistoryList(session: selected)
+                }
+            }
         }
         .padding(.top, model.layout.expandedTopPadding)
         .padding(.horizontal, 16)
@@ -334,19 +341,7 @@ private struct SessionRow<Sink: ResponseSink>: View {
                 }
             }
             Spacer(minLength: 8)
-            if session.supportsStop {
-                Button { sink.stop(sessionId: session.id) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "stop.fill").font(.system(size: 9))
-                        Text("Stop").font(.system(size: 12, weight: .semibold))
-                    }
-                    .foregroundStyle(BarTheme.error)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Capsule().fill(BarTheme.error.opacity(0.18)))
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
+            if session.supportsStop { StopButton(session: session, sink: sink) }
             removeButton
         }
         .onHover { hovering = $0 }
@@ -454,6 +449,133 @@ private struct HistoryList: View {
         case .request: return BarTheme.needsInput.opacity(0.9)
         case .answer: return .white.opacity(0.85)
         case .status, .action: return .white.opacity(0.7)
+        }
+    }
+}
+
+
+// MARK: - Stop
+
+/// Immediate stop for sessions with `supportsStop`. No confirmation, never gated by the approval click guard
+/// (stopping is always safe and must work at once). Shows "Stopping…" until the session leaves the active states.
+struct StopButton<Sink: ResponseSink>: View {
+    let session: AgentSession
+    let sink: Sink
+    var prominent = false
+    @State private var requestedAt: Date?
+
+    private var running: Bool { session.state != .done && session.state != .error }
+    private var stopping: Bool { requestedAt != nil && (session.state == .working || session.state == .needsInput) }
+
+    var body: some View {
+        if running {
+            Button {
+                requestedAt = Date()
+                sink.stop(sessionId: session.id)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: stopping ? "hourglass" : "stop.fill").font(.system(size: 10, weight: .bold))
+                    Text(stopping ? "Stopping…" : "Stop").font(.system(size: 12, weight: .bold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, prominent ? 16 : 13).padding(.vertical, prominent ? 7 : 6)
+                .background(Capsule().fill(BarTheme.error.opacity(stopping ? 0.45 : 0.95)))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(stopping)
+            .help("Stop this session now")
+            .task(id: requestedAt) {
+                guard requestedAt != nil else { return }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if !Task.isCancelled { requestedAt = nil }   // a stuck session can be stopped again
+            }
+        }
+    }
+}
+
+// MARK: - Chat
+
+private struct ChatEndKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Conversation with one chat-capable session: transcript (oldest first, follows the end), input, send and stop.
+private struct ChatPanel<Sink: ResponseSink>: View {
+    let session: AgentSession
+    let backend: ChatBackend
+    let sink: Sink
+    @ObservedObject var model: BarViewModel
+    @State private var listHeight: CGFloat = 0
+    @State private var draft = ""
+    @State private var fieldKey = 0
+    private let maxHeight: CGFloat = 110
+
+    private var busy: Bool { session.state == .working }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Chat · \(session.name)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                Spacer()
+                if busy { Text("working…").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)) }
+                StopButton(session: session, sink: sink, prominent: true)
+            }
+            transcript
+            HStack(spacing: 8) {
+                ReplyField(placeholder: "Message to agent, Enter to send",
+                           onEditing: { model.setEditing($0) },
+                           onSubmit: { send($0) })
+                    .id(fieldKey)
+                    .frame(height: 20)
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.10)))
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private func send(_ text: String) {
+        backend.send(text, sessionId: session.id)
+        fieldKey += 1          // clears the field (new NSTextField)
+    }
+
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(session.history) { e in line(e).id(e.id) }
+                    Color.clear.frame(height: 1).id("end")
+                }
+                .padding(.trailing, 6)
+                .background(GeometryReader { Color.clear.preference(key: ChatEndKey.self, value: $0.size.height) })
+            }
+            .onPreferenceChange(ChatEndKey.self) { listHeight = $0 }
+            .frame(height: listHeight == 0 ? maxHeight : min(listHeight, maxHeight))
+            .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+            .onChange(of: session.history.count) { _, _ in
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+            }
+        }
+    }
+
+    @ViewBuilder private func line(_ e: HistoryEntry) -> some View {
+        switch ChatLine.parse(e) {
+        case .user(let text):
+            HStack {
+                Spacer(minLength: 40)
+                Text(text).font(.system(size: 12)).foregroundStyle(.black)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.92)))
+            }
+        case .agent(let text, let kind):
+            HStack {
+                Text(text).font(.system(size: 12))
+                    .foregroundStyle(kind == .error ? BarTheme.error : .white.opacity(kind == .status ? 0.45 : 0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 40)
+            }
         }
     }
 }

@@ -2,6 +2,8 @@ import Foundation
 import Combine
 
 /// Single source of truth for sessions. Main-actor isolated; the transport hops onto the main actor to use it.
+public enum AgentCommand: String, Sendable { case stop, pause, resume }
+
 @MainActor
 public final class SessionStore: ObservableObject, SessionStoreReading, ResponseSink {
     public enum AskResult: Sendable, Equatable { case accepted, tooManyPending, duplicateRequest, sessionLimit }
@@ -10,6 +12,14 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
 
     /// Set by adapters / computer-use to actually halt an agent. Called on the main actor.
     public var stopHandler: ((String) -> Void)?
+
+    /// Observers of pause/resume/stop commands (the transport's `watch` connections). Called on the main actor.
+    private var commandObservers: [UUID: @Sendable (String, AgentCommand) -> Void] = [:]
+
+    public func addCommandObserver(_ f: @escaping @Sendable (String, AgentCommand) -> Void) -> UUID {
+        let t = UUID(); commandObservers[t] = f; return t
+    }
+    public func removeCommandObserver(_ token: UUID) { commandObservers[token] = nil }
 
     public var aggregateState: SessionState {
         var result = SessionState.idle
@@ -87,7 +97,9 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
             if let kind { sessions[i].kind = kind }
             if let supportsStop { sessions[i].supportsStop = supportsStop }
             if let action {
-                let a = action.capped(AgentBarLimits.maxTextLength)
+                var a = action.capped(AgentBarLimits.maxTextLength)
+                // Computer-use action text is data from an agent that acts on the screen: same sanitizing as hook text.
+                if sessions[i].kind == .computerUse { a = ClaudeCodeAdapter.clean(a, max: AgentBarLimits.maxActionLength) ?? "" }
                 if a.isEmpty { sessions[i].currentAction = nil } else if sessions[i].currentAction != a {
                     sessions[i].currentAction = a
                     append(.init(kind: .action, text: a), at: i)
@@ -117,6 +129,7 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
             guard let j = sessions.firstIndex(where: { $0.id == id }) else { return }
             sessions[j].state = .done
             sessions[j].currentAction = nil
+            sessions[j].supportsStop = false
             endedAt[id] = now()
             append(.init(kind: .status, text: "ended"), at: j)
             touch(j)
@@ -166,11 +179,18 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         resolve(requestId: response.requestId, sessionId: sessionId, response: resp)
     }
 
-    public func stop(sessionId: String) {
+    public func stop(sessionId: String) { command(.stop, sessionId: sessionId) }
+
+    /// Pause / resume (not part of the frozen `ResponseSink`): delivered to the session's `watch` connections like stop.
+    public func pause(sessionId: String) { command(.pause, sessionId: sessionId) }
+    public func resume(sessionId: String) { command(.resume, sessionId: sessionId) }
+
+    private func command(_ c: AgentCommand, sessionId: String) {
         guard let i = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
-        append(.init(kind: .status, text: "stop requested"), at: i)
+        append(.init(kind: .status, text: "\(c.rawValue) requested"), at: i)
         touch(i)
-        stopHandler?(sessionId)
+        if c == .stop { stopHandler?(sessionId) }
+        for o in Array(commandObservers.values) { o(sessionId, c) }
     }
 
     /// Removes the session. Every pending request is resolved with `.cancelled` first (waiting transport connections

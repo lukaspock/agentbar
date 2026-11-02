@@ -48,6 +48,9 @@ final class AppEnvironment {
     init(options: LaunchOptions = .current) {
         self.options = options
         backend = options.demo ? .demo(FakeSessionStore.make(options: options)) : .live(SessionStore())
+        if case .demo(let fake) = backend {
+            ChatHub.shared.backend = FakeChatBackend(store: fake, chatIds: FakeSessionStore.chatSessionIds)
+        }
         AttentionSettings.registerDefaults()
         switch backend {
         case .demo(let store): attention = AttentionNotifier(store: store)
@@ -66,6 +69,7 @@ final class AppEnvironment {
     func startTransport() throws {
         guard case .live(let store) = backend else { return }
         store.startMaintenance()
+        ChatHub.shared.backend = LiveChatBackend(store: store)
         let s = TransportServer(store: store, adapters: AdapterRegistry.make(), directory: Self.transportDirectory)
         try s.start()
         server = s

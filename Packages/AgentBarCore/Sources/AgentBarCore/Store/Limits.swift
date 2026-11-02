@@ -6,6 +6,7 @@ public enum AgentBarLimits {
     public static let maxPendingRequests = 100
     public static let maxTextLength = 4000
     public static let maxNameLength = 80
+    public static let maxActionLength = 300
     public static let maxIdLength = 200
     public static let maxOptions = 6
     public static let maxHistory = 50

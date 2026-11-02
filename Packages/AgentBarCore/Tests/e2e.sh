@@ -150,6 +150,33 @@ check "run: app absent, command still runs, exit passthrough" "5:alive" "$RC:$OU
 T0=$(date +%s); AGENTBAR_DIR="$GONE" "$CLI" run --session run-gone -- true; RC=$?; T1=$(date +%s)
 check "run: app absent not slow" yes "$([ $RC -eq 0 ] && [ $((T1-T0)) -le 3 ] && echo yes || echo no)"
 
+# stop channel: app -> CLI (no confirmation, immediate SIGTERM to the child)
+ctl() { echo "$1 $2" > "$D/cmd.txt.tmp"; mv "$D/cmd.txt.tmp" "$D/cmd.txt"; }
+stoppable() { cat "$D/stoppable.txt" 2>/dev/null; }
+is_stoppable() { stoppable | tr ',' '\n' | grep -qx "$1" && echo yes || echo no; }
+wait_stoppable() { for _ in $(seq 1 100); do [ "$(is_stoppable "$1")" == "$2" ] && return 0; sleep 0.05; done; }
+"$CLI" run --session run-stop --name StopMe -- sleep 30 & P=$!; BGPIDS="$BGPIDS $P"
+wait_stoppable run-stop yes
+check "run: supportsStop set" yes "$(is_stoppable run-stop)"
+T0=$(date +%s); ctl stop run-stop; wait $P 2>/dev/null; RC=$?; T1=$(date +%s)
+check "run: app stop => SIGTERM to child (exit 143), fast" "143:yes" "$RC:$([ $((T1-T0)) -le 3 ] && echo yes || echo no)"
+wait_stoppable run-stop no
+check "run: stopped session no longer stoppable" no "$(is_stoppable run-stop)"
+"$CLI" run --session run-pause -- sh -c 'sleep 1; echo x > "$AGENTBAR_DIR/pause.out"' & P=$!; BGPIDS="$BGPIDS $P"
+wait_stoppable run-pause yes; sleep 0.3
+ctl pause run-pause; sleep 1.8
+check "run: paused child makes no progress" no "$([ -e "$D/pause.out" ] && echo yes || echo no)"
+ctl resume run-pause; wait $P 2>/dev/null; check "run: resumed child finishes (exit 0)" "0:yes" "$?:$([ -e "$D/pause.out" ] && echo yes || echo no)"
+# watch command
+"$CLI" update --session w1 --state working
+"$CLI" watch --session w1 > "$D/watch.out" & P=$!; BGPIDS="$BGPIDS $P"
+sleep 0.5; ctl pause w1; sleep 0.3; ctl resume w1; sleep 0.3; ctl stop w1; wait $P 2>/dev/null
+check "watch: events then exit 0 on stop" "0:pause resume stop" "$?:$(echo $(cat "$D/watch.out"))"
+AGENTBAR_DIR="$GONE" "$CLI" watch --session w2 2>/dev/null; check "watch: app absent exit 3" 3 $?
+# computerUse adapter via hook
+echo '{"session":"cu1","name":"Mac\u001b[31m Agent","action":"clicking \u001b[2Jthe button","supportsStop":true}' | "$CLI" hook --adapter computerUse; check "computerUse hook exit" 0 $?
+wait_stoppable cu1 yes; check "computerUse session stoppable" yes "$(is_stoppable cu1)"
+
 OUT=$("$CLI" hook --adapter claudeCode --argv '{"garbage":true}'); check "hook --argv invalid payload silent" "0:" "$?:$OUT"
 
 # app absent

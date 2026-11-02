@@ -4,6 +4,6 @@ import Foundation
 public enum AdapterRegistry {
     public static func make() -> [String: AgentAdapter] {
         ["claudeCode": ClaudeCodeAdapter(), "genericCLI": GenericCLIAdapter(),
-         CodexAdapter.adapterId: CodexAdapter()]
+         CodexAdapter.adapterId: CodexAdapter(), "computerUse": ComputerUseAdapter()]
     }
 }

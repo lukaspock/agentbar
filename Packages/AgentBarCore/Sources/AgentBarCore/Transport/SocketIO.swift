@@ -92,3 +92,48 @@ final class ResponseWaiter: @unchecked Sendable {
         }
     }
 }
+
+
+/// Commands queued for one `watch` connection; wakes the connection thread through a pipe.
+final class CommandQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [AgentCommand] = []
+    private var fds: [Int32] = [-1, -1]
+
+    init() {
+        pipe(&fds)
+        SocketIO.setCloexec(fds[0]); SocketIO.setCloexec(fds[1])
+        _ = fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK)
+    }
+    deinit { close(fds[0]); close(fds[1]) }
+
+    func push(_ c: AgentCommand) {
+        lock.lock(); items.append(c); lock.unlock()
+        var b: UInt8 = 1
+        _ = write(fds[1], &b, 1)
+    }
+
+    private func pop() -> AgentCommand? { lock.lock(); defer { lock.unlock() }; return items.isEmpty ? nil : items.removeFirst() }
+
+    enum Outcome { case command(AgentCommand), disconnected }
+
+    func wait(clientFd: Int32) -> Outcome {
+        var buf = [UInt8](repeating: 0, count: 1024)
+        while true {
+            if let c = pop() { return .command(c) }
+            var pfds = [pollfd(fd: clientFd, events: Int16(POLLIN), revents: 0),
+                        pollfd(fd: fds[0], events: Int16(POLLIN), revents: 0)]
+            let rc = poll(&pfds, 2, -1)
+            if rc < 0 { if errno == EINTR { continue }; return .disconnected }
+            if pfds[1].revents != 0 {
+                _ = read(fds[0], &buf, buf.count)
+                if let c = pop() { return .command(c) }
+            }
+            if pfds[0].revents != 0 {
+                let n = read(clientFd, &buf, buf.count)
+                if n == 0 { return .disconnected }
+                if n < 0 && errno != EINTR && errno != EAGAIN { return .disconnected }
+            }
+        }
+    }
+}

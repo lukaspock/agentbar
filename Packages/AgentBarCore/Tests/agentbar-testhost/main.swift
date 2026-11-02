@@ -26,7 +26,7 @@ struct FakeClaude: AgentAdapter {
     if let i = a.firstIndex(of: "--dir"), i + 1 < a.count { dir = a[i + 1] }
     guard let dir else { FileHandle.standardError.write(Data("usage: agentbar-testhost --dir DIR\n".utf8)); exit(64) }
     let store = SessionStore()
-    let server = TransportServer(store: store, adapters: ["claudeCode": FakeClaude()], directory: URL(fileURLWithPath: dir))
+    let server = TransportServer(store: store, adapters: ["claudeCode": FakeClaude(), "computerUse": ComputerUseAdapter()], directory: URL(fileURLWithPath: dir))
     do { try server.start() } catch { FileHandle.standardError.write(Data("start failed: \(error)\n".utf8)); exit(1) }
     let statePath = dir + "/state.txt"
     let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
@@ -38,6 +38,17 @@ struct FakeClaude: AgentAdapter {
                     store.respond(AgentResponse(requestId: r.requestId, optionId: "deny"), sessionId: s.id) // must be ignored
                 }
             }
+            // Test control channel: a file `cmd.txt` with "<stop|pause|resume> <session>" plays the UI's button.
+            if let c = try? String(contentsOfFile: dir + "/cmd.txt", encoding: .utf8) {
+                unlink(dir + "/cmd.txt")
+                let p = c.split(separator: " ", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                if p.count == 2 {
+                    switch p[0] { case "stop": store.stop(sessionId: p[1]); case "pause": store.pause(sessionId: p[1])
+                    case "resume": store.resume(sessionId: p[1]); default: break }
+                }
+            }
+            let stopFlags = store.sessions.filter { $0.supportsStop }.map { $0.id }.sorted().joined(separator: ",")
+            try? stopFlags.write(toFile: dir + "/stoppable.txt", atomically: true, encoding: .utf8)
             let line = "pending=\(store.pendingRequestCount) sessions=\(store.sessions.count) aggregate=\(store.aggregateState.rawValue)\n"
             try? line.write(toFile: statePath + ".tmp", atomically: false, encoding: .utf8)
             rename(statePath + ".tmp", statePath)

@@ -17,7 +17,9 @@ usage:
   agentbar log --session ID --kind K --text T
   agentbar end --session ID
   agentbar remove --session ID            (removes the session; its pending asks return "cancelled")
-  agentbar hook --adapter claudeCode|codex|genericCLI [--argv JSON]   (reads hook JSON on stdin, or from --argv)
+  agentbar hook --adapter claudeCode|codex|genericCLI|computerUse [--argv JSON]   (reads hook JSON on stdin, or from --argv)
+  agentbar watch --session ID             (blocks; prints "pause"/"resume"/"stop" lines as the app sends them; exits 0 after stop,
+                                           3 if the app is/gets unreachable)
   agentbar run --session ID [--name N] [--log] -- <cmd> [args...]
                                           (runs cmd; session working -> done/error by exit code; --log forwards stdout lines)
 
@@ -229,6 +231,51 @@ func runHook(_ a: Args) -> Int32 {
     return 0
 }
 
+// MARK: watch (command channel app -> CLI)
+
+enum WatchEnd { case stopped, lost, unreachable }
+
+/// Opens a `watch` connection and calls `onEvent` for each command line ("pause", "resume", "stop"). `onConnected` runs once the
+/// server confirmed. Returns when stop arrived, the connection broke, or the app is unreachable.
+func watchSession(_ session: String, onConnected: () -> Void = {}, onEvent: (String) -> Void) -> WatchEnd {
+    let dir = defaultDir()
+    guard let token = readToken(dir), let fd = connectSocket(dir) else { return .unreachable }
+    defer { close(fd) }
+    var tv = timeval(tv_sec: 0, tv_usec: 0)    // the connection is long-lived: no send timeout needed for reading
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    guard var data = try? JSONSerialization.data(withJSONObject: ["op": "watch", "session": session, "token": token], options: [.sortedKeys]) else { return .lost }
+    data.append(0x0A)
+    guard data.withUnsafeBytes({ write(fd, $0.baseAddress!, $0.count) }) == data.count else { return .lost }
+    var buf = Data(); var chunk = [UInt8](repeating: 0, count: 4096)
+    var confirmed = false
+    while true {
+        let n = read(fd, &chunk, chunk.count)
+        if n < 0 { if errno == EINTR { continue }; return .lost }
+        if n == 0 { return .lost }
+        buf.append(contentsOf: chunk[0..<n])
+        if buf.count > 64 * 1024 { return .lost }
+        while let nl = buf.firstIndex(of: 0x0A) {
+            let line = buf[buf.startIndex..<nl]; buf = Data(buf[(nl + 1)...])
+            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any], o["ok"] as? Bool == true,
+                  let ev = o["event"] as? String else { return .lost }
+            if ev == "watching" { confirmed = true; onConnected(); continue }
+            guard confirmed else { return .lost }
+            onEvent(ev)
+            if ev == "stop" { return .stopped }
+        }
+    }
+}
+
+func runWatch(_ a: Args) -> Int32 {
+    guard need(a, ["session"]) else { return Exit.invalid }
+    let end = watchSession(a.one("session")!, onEvent: { out($0 + "\n"); fflush(stdout) })
+    switch end {
+    case .stopped: return Exit.ok
+    case .unreachable: err("agentbar: app not reachable"); return Exit.unreachable
+    case .lost: err("agentbar: connection to app lost"); return Exit.unreachable
+    }
+}
+
 // MARK: run (generic CLI wrapper)
 
 /// Fire-and-forget notifications to the app on a serial queue: a missing or hung app never delays the wrapped command.
@@ -274,7 +321,7 @@ func runWrapped(_ rawArgs: [String]) -> Int32 {
     let notifier = Notifier(session: session)
     let shown = cmd.joined(separator: " ")
     let action = "running: " + (shown.count > 120 ? String(shown.prefix(120)) + "…" : shown)
-    notifier.update(["name": name, "kind": "genericCLI", "state": "working", "action": action])
+    notifier.update(["name": name, "kind": "genericCLI", "state": "working", "action": action, "supportsStop": true])
 
     // Signals: reset to default for the child (SIG_IGN would be inherited across exec), handled here via dispatch sources.
     let sigs: [Int32] = [SIGINT, SIGTERM, SIGHUP, SIGQUIT]
@@ -308,7 +355,7 @@ func runWrapped(_ rawArgs: [String]) -> Int32 {
         if forwardLines { close(pipeFds[0]) }
         let code: Int32 = (spawnRc == ENOENT) ? 127 : 126
         err("agentbar: cannot run '\(cmd[0])': \(String(cString: strerror(spawnRc)))")
-        notifier.update(["state": "error", "action": "cannot start: \(cmd[0])"])
+        notifier.update(["state": "error", "action": "cannot start: \(cmd[0])", "supportsStop": false])
         notifier.log("error", "cannot start '\(cmd[0])': \(String(cString: strerror(spawnRc)))")
         notifier.flush()
         return code
@@ -331,6 +378,26 @@ func runWrapped(_ rawArgs: [String]) -> Int32 {
         src.resume()
         sources.append(src)
     }
+
+    // Command channel app -> CLI: stop = SIGTERM to the child (immediately, no confirmation), pause/resume = SIGSTOP/SIGCONT.
+    // Re-connects (and re-announces supportsStop) while the child runs, e.g. after an app restart.
+    let childAlive = ManagedFlag(); childAlive.set(1)
+    let watcher = Thread {
+        while childAlive.value != 0 {
+            let end = watchSession(session, onConnected: { if childAlive.value != 0 { notifier.update(["supportsStop": true]) } }, onEvent: { ev in
+                guard runChildPid > 0 else { return }
+                switch ev {
+                case "stop": interrupted.set(SIGTERM); kill(runChildPid, SIGTERM); kill(runChildPid, SIGCONT)
+                case "pause": kill(runChildPid, SIGSTOP); notifier.update(["action": "paused: " + shown.prefix(100)])
+                case "resume": kill(runChildPid, SIGCONT); notifier.update(["action": action])
+                default: break
+                }
+            })
+            if end == .stopped { return }
+            for _ in 0..<20 where childAlive.value != 0 { usleep(100_000) }
+        }
+    }
+    watcher.start()
 
     // stdout -> our stdout (verbatim) and, line by line, to the app (bounded).
     var logThread: Thread?
@@ -367,6 +434,7 @@ func runWrapped(_ rawArgs: [String]) -> Int32 {
     var status: Int32 = 0
     while waitpid(pid, &status, 0) < 0 { if errno != EINTR { status = 1 << 8; break } }
     runChildPid = 0
+    childAlive.set(0)
     if logThread != nil { _ = logDone.wait(timeout: .now() + 2) }
     for src in sources { src.cancel() }
 
@@ -385,7 +453,7 @@ func runWrapped(_ rawArgs: [String]) -> Int32 {
     } else {
         let why = sigName.map { "killed: \($0)" } ?? "exit \(exitCode)"
         notifier.log("error", why)
-        notifier.update(["state": "error", "action": why])
+        notifier.update(["state": "error", "action": why, "supportsStop": false])
     }
     notifier.flush()
     return exitCode
@@ -430,6 +498,7 @@ case "end":
 case "remove":
     code = need(args, ["session"]) ? simpleCommand("remove", ["session": args.one("session")!]) : Exit.invalid
 case "hook": code = runHook(args)
+case "watch": code = runWatch(args)
 default: err(usage); code = Exit.invalid
 }
 exit(code)

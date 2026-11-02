@@ -15,6 +15,7 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
         return states.contains(.done) ? .done : .idle
     }
 
+    static let chatSessionIds: Set<String> = ["chat1"]
     static let scenarioOrder = ["idle", "working", "needsInput", "computer", "question", "error"]
     private var timer: Timer?
     private var scriptIndex = 0
@@ -102,6 +103,18 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                     }
                 }
             }
+        case "chat":
+            let chat = [h(200, .status, "Chat started in ~/Projects/agentbar"),
+                        h(150, .answer, "You: Which targets does the project define?"),
+                        h(140, .action, "Read project.yml"),
+                        h(120, .action, "Two targets: the app and the agentbar CLI."),
+                        h(60, .answer, "You: Please add a Stop button to the session row."),
+                        h(30, .action, "Editing DetailPanel.swift")]
+            list = [AgentSession(id: "chat1", name: "agentbar", kind: .claudeCode, state: .working,
+                                 currentAction: "Editing DetailPanel.swift", history: chat, supportsStop: true),
+                    AgentSession(id: "m", name: "Browser Agent", kind: .computerUse, state: .working,
+                                 currentAction: "Clicking the \"Submit\" button in Safari", supportsStop: true),
+                    AgentSession(id: "b", name: "api-server", kind: .codex, state: .idle)]
         case "error":
             list = [AgentSession(id: "c", name: "deploy.sh", kind: .genericCLI, state: .error,
                                  history: [h(60, .action, "Uploading build"), h(5, .error, "Exit code 1: connection refused")]),
@@ -148,6 +161,15 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
         sessions = sorted(sessions)
         NSLog("[demo] stop session=%@", sessionId)
     }
+
+    func appendHistory(sessionId: String, _ entry: HistoryEntry, state: SessionState? = nil) {
+        guard let i = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        sessions[i].history.append(entry)
+        if let state { sessions[i].state = state; sessions[i].currentAction = nil }
+        sessions[i].updatedAt = Date()
+    }
+
+    func addSession(_ s: AgentSession) { sessions = sorted(sessions + [s]) }
 
     func remove(sessionId: String) {
         guard sessions.contains(where: { $0.id == sessionId }) else { return }
