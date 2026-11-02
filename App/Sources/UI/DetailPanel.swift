@@ -40,7 +40,7 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
     }
 
     private var selected: AgentSession? {
-        store.sessions.first { $0.id == model.selectedSessionId } ?? SessionGrouping.flat(store.sessions).first
+        store.sessions.first { $0.id == model.selectedSessionId }   // nil = nothing selected (click the row again to deselect)
     }
 
     var body: some View {
@@ -92,7 +92,7 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                         ForEach(group.sessions) { session in
                             SessionRow(session: session, selected: session.id == selected?.id,
                                        disambiguate: group.sessions.count > 1, sink: store)
-                                .onTapGesture { withAnimation(BarTheme.spring) { model.selectedSessionId = session.id } }
+                                .onTapGesture { withAnimation(BarTheme.spring) { model.selectedSessionId = model.selectedSessionId == session.id ? nil : session.id } }
                                 .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
                         }
                     }
@@ -120,8 +120,8 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                     HistoryList(session: selected)
                 }
             }
-            if hub.backend != nil, !(selected.map { hub.supportsChat($0) } ?? false) {
-                NewSessionButton().frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 10)
+            if selected == nil, hub.backend != nil {
+                NewSessionButton().frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10)
             }
         }
         .padding(.top, model.layout.expandedTopPadding)
@@ -527,14 +527,13 @@ private struct ChatPanel<Sink: ResponseSink>: View {
             }
             transcript
             HStack(spacing: 8) {
-                ReplyField(placeholder: "Message, Enter to send",
+                ReplyField(placeholder: "Message to agent, Enter to send",
                            onEditing: { model.setEditing($0) },
                            onSubmit: { send($0) })
                     .id(fieldKey)
                     .frame(height: 20)
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.10)))
-                NewSessionButton()
             }
         }
         .padding(.horizontal, 10)

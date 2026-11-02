@@ -25,6 +25,8 @@ Try it without any agent: run the app with `--demo`. With the app running, use t
 Menu bar icon → "Hooks einrichten…" shows a diff preview of the changes to `~/.claude/settings.json`, writes a backup, and only
 applies after your confirmation. Timeouts and errors never auto-allow: Claude Code falls back to its own dialog.
 
+> **Hinweis:** Die Hooks speichern den absoluten Pfad zur mitgelieferten CLI (`AgentBar.app/Contents/Resources/agentbar`). Wird die App verschoben oder umbenannt (z. B. vom Build-Ordner nach `~/Desktop` oder `/Applications`), muss im Menüleisten-Icon erneut "Hooks einrichten…" ausgeführt werden.
+
 ## Docs
 [CONTRACTS.md](CONTRACTS.md) (architecture, wire protocol), [Docs/research](Docs/research), [ROADMAP.md](ROADMAP.md).
 

@@ -88,6 +88,7 @@ final class BarViewModel: ObservableObject {
         self.layout = layout
         self.expanded = startExpanded
         self.pinnedExpanded = startExpanded
+        selectedSessionId = LaunchOptions.current.demoSelect
     }
 
     /// Opens the panel briefly (new request). Collapses again after `hold` seconds unless the pointer is inside or a reply is being typed.

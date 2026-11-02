@@ -9,6 +9,7 @@ struct LaunchOptions {
     var demoExpanded = false
     var presentation: PresentationStyle?
     var autoAnswer: String?
+    var demoSelect: String?       // --demo-select <sessionId>: start with this session selected (screenshots)
 
     static let current = LaunchOptions(arguments: CommandLine.arguments)
 
@@ -20,6 +21,7 @@ struct LaunchOptions {
             case "--demo": demo = true
             case "--demo-expanded": demoExpanded = true
             case "--demo-state": demo = true; demoState = next; i += 1
+            case "--demo-select": demoSelect = next; i += 1
             case "--presentation": presentation = next.flatMap(PresentationStyle.init(rawValue:)); i += 1
             #if DEBUG
             case "--auto-answer": autoAnswer = next; i += 1
