@@ -523,7 +523,6 @@ private struct ChatPanel<Sink: ResponseSink>: View {
                 Text("Chat · \(session.name)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
                 Spacer()
                 if busy { Text("working…").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)) }
-                StopButton(session: session, sink: sink, prominent: true)
             }
             transcript
             HStack(spacing: 8) {
