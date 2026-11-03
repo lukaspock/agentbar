@@ -165,4 +165,65 @@ final class ClaudeCodeHookSetupTests: XCTestCase {
         let perm = (try FileManager.default.attributesOfItem(atPath: file.path))[.posixPermissions] as? Int
         XCTAssertEqual(perm, 0o600)
     }
+
+    // MARK: locateCLI / wrong-path repair
+
+    private func fakeBundle(gui: Bool = true, cli: Bool) throws -> (exe: URL, res: URL) {
+        let fm = FileManager.default
+        let macos = dir.appendingPathComponent("AgentBar.app/Contents/MacOS")
+        let res = dir.appendingPathComponent("AgentBar.app/Contents/Resources")
+        try fm.createDirectory(at: macos, withIntermediateDirectories: true)
+        try fm.createDirectory(at: res, withIntermediateDirectories: true)
+        let exe = macos.appendingPathComponent("AgentBar")
+        if gui { try "#!/bin/sh\n".write(to: exe, atomically: true, encoding: .utf8); try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path) }
+        if cli {
+            let c = res.appendingPathComponent("agentbar")
+            try "#!/bin/sh\n".write(to: c, atomically: true, encoding: .utf8); try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: c.path)
+        }
+        return (exe, res)
+    }
+
+    func testLocateCLIPicksResourcesNotGUI() throws {
+        let b = try fakeBundle(cli: true)
+        XCTAssertEqual(HookSetup.locateCLI(executableURL: b.exe, resourceURL: b.res), b.res.appendingPathComponent("agentbar").path)
+    }
+
+    func testLocateCLIRejectsGUIBinaryOnly() throws {
+        let b = try fakeBundle(cli: false)
+        // On a case-insensitive volume MacOS/agentbar IS MacOS/AgentBar; on a case-sensitive one it does not exist. Both: nil.
+        XCTAssertNil(HookSetup.locateCLI(executableURL: b.exe, resourceURL: b.res))
+    }
+
+    func testLocateCLIRejectsGUIBinaryViaSymlink() throws {
+        let b = try fakeBundle(cli: false)
+        let link = dir.appendingPathComponent("agentbar")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: b.exe)
+        XCTAssertNil(HookSetup.locateCLI(executableURL: b.exe, resourceURL: b.res, override: link.path))
+    }
+
+    func testLocateCLIOverrideStaysValid() throws {
+        let b = try fakeBundle(cli: false)
+        let o = dir.appendingPathComponent("custom/agentbar")
+        try FileManager.default.createDirectory(at: o.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\n".write(to: o, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: o.path)
+        XCTAssertEqual(HookSetup.locateCLI(executableURL: b.exe, resourceURL: b.res, override: o.path), o.path)
+    }
+
+    func testReinstallReplacesWrongGUIPathWithoutDuplicating() throws {
+        let wrong = setup("/Users/x/Desktop/AgentBar.app/Contents/MacOS/agentbar")
+        try wrong.apply(try wrong.planInstall(), confirm: { _ in true })
+        let right = setup("/Users/x/Desktop/AgentBar.app/Contents/Resources/agentbar")
+        let plan = try right.planInstall()
+        XCTAssertFalse(plan.isNoOp)
+        try right.apply(plan, confirm: { _ in true })
+        let hooks = fileObj()["hooks"] as! [String: Any]
+        for (_, v) in hooks {
+            let groups = v as! [[String: Any]]
+            XCTAssertEqual(groups.count, 1)
+            let cmds = groups.flatMap { ($0["hooks"] as! [[String: Any]]).map { $0["command"] as! String } }
+            XCTAssertEqual(cmds, ["/Users/x/Desktop/AgentBar.app/Contents/Resources/agentbar hook --adapter claudeCode"])
+        }
+        XCTAssertTrue(try right.planInstall().isNoOp)
+    }
 }

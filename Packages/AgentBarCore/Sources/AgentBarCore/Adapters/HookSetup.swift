@@ -57,13 +57,32 @@ public struct HookSetup: Sendable {
         self.settingsURL = settingsURL; self.agentbarPath = agentbarPath; self.now = now
     }
 
-    /// Where the CLI is expected: next to the app executable, in Resources, or a user override.
+    /// Where the CLI is expected: a user override, `Contents/Resources/agentbar` (see bundle-cli.sh), or next to the
+    /// app executable. A candidate that is the same file as the app's own executable is rejected: the GUI binary is
+    /// named `AgentBar`, and on a case-insensitive volume `MacOS/agentbar` resolves to that very binary.
     public static func locateCLI(bundle: Bundle = .main, override: String? = nil) -> String? {
+        locateCLI(executableURL: bundle.executableURL, resourceURL: bundle.resourceURL, override: override)
+    }
+
+    static func locateCLI(executableURL: URL?, resourceURL: URL?, override: String? = nil) -> String? {
         var c: [String] = []
         if let o = override, !o.isEmpty { c.append(o) }
-        if let exe = bundle.executableURL?.deletingLastPathComponent() { c.append(exe.appendingPathComponent("agentbar").path) }
-        if let res = bundle.resourceURL { c.append(res.appendingPathComponent("agentbar").path) }
-        return c.first { FileManager.default.isExecutableFile(atPath: $0) }
+        if let res = resourceURL { c.append(res.appendingPathComponent("agentbar").path) }
+        if let exe = executableURL?.deletingLastPathComponent() { c.append(exe.appendingPathComponent("agentbar").path) }
+        let guiID = executableURL.flatMap { fileIdentity($0.path) }
+        return c.first { path in
+            guard FileManager.default.isExecutableFile(atPath: path), let id = fileIdentity(path) else { return false }
+            if id.isDirectory { return false }
+            if let g = guiID, g.dev == id.dev, g.ino == id.ino { return false }   // same file as the GUI executable
+            return true
+        }
+    }
+
+    /// (device, inode, isDirectory) of the file a path resolves to (symlinks followed, case-insensitivity honoured by the FS).
+    private static func fileIdentity(_ path: String) -> (dev: UInt64, ino: UInt64, isDirectory: Bool)? {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        return (UInt64(st.st_dev), UInt64(st.st_ino), (st.st_mode & S_IFMT) == S_IFDIR)
     }
 
     public func command() throws -> String {
