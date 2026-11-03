@@ -59,7 +59,7 @@ final class PanelController<S: SessionStoreReading & ResponseSink> {
         if style == .circle { anchor = Self.loadAnchor() }
 
         panel.contentView = BarHostingView(rootView: BarShell(store: store, model: model))
-        model.keyHandler = { [weak self] editing in if !editing { self?.releaseKey() } }
+        model.keyHandler = { [weak self] needsKey in if needsKey { self?.acquireKey() } else { self?.releaseKey() } }
         model.onDrag = { [weak self] phase in self?.handleDrag(phase) }
         model.$expanded.sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateOffset() }
@@ -90,7 +90,7 @@ final class PanelController<S: SessionStoreReading & ResponseSink> {
     /// Target visible shape in screen coordinates, derived from layout state (not from SwiftUI geometry callbacks).
     private func visibleScreenRect() -> CGRect? {
         let l = model.layout
-        let w = model.expanded ? l.expandedWidth : l.collapsedSize.width
+        let w = model.expanded ? model.expandedWidth : l.collapsedSize.width
         let h = model.expanded ? min(max(model.contentHeight, l.collapsedSize.height), l.maxHeight) : l.collapsedSize.height
         let win = panel.frame
         guard win.width > 0 else { return nil }
@@ -115,6 +115,11 @@ final class PanelController<S: SessionStoreReading & ResponseSink> {
         let wantsMouse = inside || model.isEditing || dragOrigin != nil
         if panel.ignoresMouseEvents == wantsMouse { panel.ignoresMouseEvents = !wantsMouse }
         model.pointerChanged(inside || dragOrigin != nil)
+    }
+
+    private func acquireKey() {
+        panel.allowKey = true
+        if !panel.isKeyWindow { panel.makeKey() }
     }
 
     private func releaseKey() {

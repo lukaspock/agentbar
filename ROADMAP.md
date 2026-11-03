@@ -69,3 +69,21 @@ nichts an `~/.claude` ändern außer über "Hooks einrichten…" nach Bestätigu
 ## Dateibesitz (Subagent-Aufträge disjunkt halten)
 `Contract/` = nur Coordinator (zuletzt additiv erweitert um `ResponseSink.remove`). Store/Transport/CLI/Tests = Core-Agent.
 `App/Sources/UI` + `App/Sources/App` = UI-Agent. `Adapters`/`Setup` = Adapter-Agent. Integration/Review am Ende ein eigener Agent.
+
+## Phase 4 (Vision): Agent arbeitet parallel am Rechner "wie ein zweiter Mensch" (aufgenommen 2026-11-03)
+Ziel des Users: Ein Agent nutzt am Ende alle Tools inkl. Maus/Tastatur/Computer Use, gleichzeitig, **ohne den User zu stören** (eigener Bildschirm, eigene Maus, eigener Fokus).
+- **Einschätzung (UNVERIFIED, vor Bau per Machbarkeitsstudie prüfen):** Computer Use unter dem Daemon-Benutzer `agentbar` geht nicht (keine GUI-Sitzung, TCC-Rechte nur interaktiv). "Zweite GUI-Sitzung per Fast User Switching" stört nicht, funktioniert aber vermutlich nicht verlässlich: Eine inaktive Sitzung hat keinen aktiven Bildschirm, Screenshot und Eingabe-Events laufen dort unzuverlässig, Rechte müssen in der Sitzung selbst erteilt werden. Dieselbe Sitzung wie der User stört immer (geteilte Maus/Fokus).
+- **Empfohlene Option: macOS-VM auf dem eigenen Mac** (Tart oder Virtualization.framework, Apple Silicon). Eigener virtueller Bildschirm, eigene Maus/Tastatur, eigene Benutzer, volle Isolation; Screenshots und Eingaben laufen über die VM-Schnittstelle (VNC/Virtualization-Display) statt über deine Sitzung. Bekannte Grenzen: maximal 2 macOS-VMs gleichzeitig, Ressourcenverbrauch (RAM/CPU), Einmal-Setup (Anmeldung, Bedienungshilfen/Screen-Recording-Rechte im Gast, `claude` + Token im Gast), keine iCloud-Dienste im Gast.
+- **Alternativen:** zweiter physischer Mac (z. B. Mac mini) mit demselben Host-Protokoll über Netzwerk; für reine Web-Aufgaben ein headless Browser im Workspace von `agentbar` (kein Bildschirm nötig).
+- **Architektur-Hinweis:** Das Host-Protokoll (Stufe 2) ist bewusst ein "dummes Rohr": `agentbar-host` kann später in der VM statt unter `agentbar` laufen; die Bar bleibt Besitzer von Freigaben/Sicherheitslogik. Transport wäre dann TCP/vsock statt Unix-Socket (neue Transport-Sicherheit nötig: Authentisierung, Verschlüsselung).
+- **Nächster Schritt:** Machbarkeitsstudie (Option VM vs. zweite GUI-Sitzung vs. 2. Mac): Tart-Setup, Computer-Use-Latenz, Rechtevergabe im Gast, Host in der VM, Netzwerk-Transport. Danach Entscheidung durch den User.
+
+## B7: First-Run-Setup im Panel (aufgenommen 2026-11-03)
+Ziel: Das manuelle Terminal-Setup (Benutzer `agentbar`, Gruppe, Verzeichnisse, Daemon, Token) läuft beim ersten Öffnen der App als geführter Ablauf im Notch-Panel: Karte "Agent user einrichten", ein Klick, ein Admin-Prompt (Passwort/Touch ID), Fortschritt im Panel; Gegenstück "Entfernen". Scripts (`Scripts/setup-agent-user.sh`, `remove-agent-user.sh`) und `agentbar-host`/CLI werden ins App-Bundle gelegt.
+**Machbarkeitsprüfung zuerst (kurze Experimente, UNVERIFIED bis dahin):**
+1. Admin-Prompt: Setup-Script aus der App mit Admin-Rechten starten (Admin-Dialog über `osascript ... with administrator privileges` bzw. Authorization Services) gegen `SMAppService.daemon` (Daemon im Bundle, einmalige Freigabe in den Systemeinstellungen). Welcher Weg funktioniert mit lokaler/ad-hoc-Signatur?
+2. Token abfangen: `claude setup-token` aus der App per PTY starten, Browser-Login des Users abwarten, Token aus der Ausgabe lesen und direkt in `~agentbar/.config/agentbar/claude-oauth-token` (0600) schreiben, ohne ihn anzuzeigen oder zu loggen. Ist die Ausgabe zuverlässig parsebar?
+3. Re-Login sparen: Verzeichnis `/Users/Shared/AgentBar` im Setup mit Gruppe `agentbar-ipc` anlegen, sodass neue Dateien (Socket) die Gruppe erben und kein `chown` auf die Gruppe nötig ist (BSD-Semantik); danach entfällt das Ab-/Anmelden.
+4. Fehler- und Rückbaupfade (Teil-Setup erkennen und reparieren; die Lektionen aus Nachtrag 2 in HANDOFF.md).
+**Verteilung:** Für andere Nutzer wäre eine Developer-ID-Signatur plus Notarisierung nötig (bezahlter Apple Developer Account); sonst Gatekeeper-Warnung ("Trotzdem öffnen") oder Selbstbau aus dem Quellcode. Für den eigenen Mac reicht die lokale Signatur.
+**Reihenfolge:** nach B4 und B5. Die Experimente 1 und 2 brauchen den User (Admin-Passwort, Browser-Login).

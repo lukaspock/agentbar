@@ -20,6 +20,9 @@ enum BlobKind: Int, CaseIterable {
         return palette[Int((djb2(id) / 7) % UInt64(palette.count))]
     }
 
+    /// Numeric per-session seed for timing variation (0 for the empty string's hash is fine).
+    static func seed(_ id: String) -> UInt64 { djb2(id) }
+
     private static func djb2(_ s: String) -> UInt64 {
         s.unicodeScalars.reduce(5381 as UInt64) { ($0 &* 33) &+ UInt64($1.value) }
     }
@@ -84,39 +87,191 @@ struct BlobShape: Shape {
     }
 }
 
+// MARK: - Idle life (breathing, sleep, micro actions, afterglow)
+
+private struct BarActiveKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    /// False while a blob is not on screen (e.g. the collapsed circle while the panel is expanded): it then ticks very slowly.
+    var barActive: Bool {
+        get { self[BarActiveKey.self] }
+        set { self[BarActiveKey.self] = newValue }
+    }
+}
+
+/// Small idle gestures, spread over time per session (interval 20-40 s, order derived from the session id).
+enum MicroAction: CaseIterable {
+    case yawn, stretch, follow, wiggle
+
+    var duration: Double {
+        switch self {
+        case .yawn: return 2.4
+        case .stretch: return 1.9
+        case .follow: return 3.2
+        case .wiggle: return 1.5
+        }
+    }
+
+    /// The action running at time `t` (reference-date seconds) for a session seed, with its local time.
+    static func current(t: Double, seed: UInt64) -> (action: MicroAction, u: Double)? {
+        let period = 20 + Double(seed % 21)
+        let offset = Double((seed / 21) % 20)
+        let x = t - offset
+        guard x >= 0 else { return nil }
+        let k = (x / period).rounded(.down)
+        let local = x - k * period
+        let pick = Int(((seed &+ UInt64(k) &* 2654435761) >> 4) % UInt64(allCases.count))
+        let action = allCases[pick]
+        return local < action.duration ? (action, local) : nil
+    }
+}
+
+/// Redraw cadence of a blob: fast only while something visibly moves, slow while asleep, hidden or static.
+struct BlobSchedule: TimelineSchedule {
+    var state: SessionState
+    var since: Date?
+    var seed: UInt64
+    var active: Bool
+    var animated: Bool
+    var waking: Date?
+
+    func entries(from start: Date, mode: TimelineScheduleMode) -> UnfoldSequence<Date, Date> {
+        sequence(state: start) { last in
+            let next = last.addingTimeInterval(interval(at: last) * (mode == .lowFrequency ? 4 : 1))
+            last = next
+            return next
+        }
+    }
+
+    private func interval(at date: Date) -> TimeInterval {
+        guard animated, active else { return 5 }
+        if let win = NSApp.windows.first(where: { $0 is BarPanel }),
+           !(win.isVisible && win.occlusionState.contains(.visible)) { return 2 }
+        switch state {
+        case .working, .needsInput: return 1.0 / 30
+        case .error: return 1
+        case .idle, .done:
+            if let waking, date.timeIntervalSince(waking) < 1 { return 1.0 / 30 }
+            let age = since.map { date.timeIntervalSince($0) } ?? 0
+            if since != nil, age > BarTheme.idleSleepAfter + 2 { return 1.0 / 8 }
+            if state == .done, age < BarTheme.doneGlowDuration { return 1.0 / 24 }
+            if MicroAction.current(t: date.timeIntervalSinceReferenceDate, seed: seed) != nil { return 1.0 / 30 }
+            return 1.0 / 15
+        }
+    }
+}
+
 /// A tiny blob character with two pill eyes. The expression follows the session state.
+/// Idle/done blobs breathe, look around, do small gestures and fall asleep after `BarTheme.idleSleepAfter`
+/// (measured from `stateSince`); done sessions get a fading afterglow ring.
 struct BlobView: View {
     let state: SessionState
     var kind: BlobKind = .circle
     var size: CGFloat = 18
     var tint: Color? = nil
+    /// When the current state began (e.g. the session's `updatedAt`); nil = never falls asleep, no afterglow.
+    var stateSince: Date? = nil
+    /// Per-session seed text (session id) for the timing of the micro actions.
+    var seed: String = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.barActive) private var barActive
+    @State private var wakeAt: Date?
+
+    private struct Stamp: Equatable { var state: SessionState; var since: Date? }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { ctx in
+        let schedule = BlobSchedule(state: state, since: stateSince, seed: BlobKind.seed(seed), active: barActive,
+                                    animated: !reduceMotion, waking: wakeAt)
+        TimelineView(schedule) { ctx in
             GeometryReader { geo in
-                blob(t: reduceMotion ? 0 : ctx.date.timeIntervalSinceReferenceDate, frame: geo.frame(in: .global))
+                blob(now: ctx.date, frame: geo.frame(in: .global))
             }
         }
         .frame(width: size, height: size)
         .animation(BarTheme.spring, value: state)
+        .onChange(of: Stamp(state: state, since: stateSince)) { old, _ in
+            if isAsleep(now: Date(), state: old.state, since: old.since) { wakeAt = Date() }
+        }
     }
 
-    private var color: Color {
-        if let tint, state == .working || state == .idle || state == .done { return state == .working ? tint : BarTheme.idle }
-        return BarTheme.color(for: state)
+    private func resting(_ st: SessionState) -> Bool { st == .idle || st == .done }
+
+    private func isAsleep(now: Date, state st: SessionState, since: Date?) -> Bool {
+        guard resting(st), let since else { return false }
+        return now.timeIntervalSince(since) > BarTheme.idleSleepAfter
     }
 
-    private func blob(t: Double, frame: CGRect) -> some View {
+    /// 0 awake ... 1 asleep, eased over two seconds so eyes close and colour dims smoothly.
+    private func sleepProgress(now: Date) -> Double {
+        guard resting(state), let stateSince else { return 0 }
+        return max(0, min(1, (now.timeIntervalSince(stateSince) - BarTheme.idleSleepAfter) / 2))
+    }
+
+    private func color(sleep: Double) -> Color {
+        guard state == .working || state == .idle || state == .done else { return BarTheme.color(for: state) }
+        if state == .working { return tint ?? BarTheme.color(for: state) }
+        if let tint { return tint.opacity(BarTheme.idleDim - 0.10 * sleep) }
+        return BarTheme.idle
+    }
+
+    private func blob(now: Date, frame: CGRect) -> some View {
         let s = size
         let animated = !reduceMotion
+        let t = animated ? now.timeIntervalSinceReferenceDate : 0
+        let sleep = sleepProgress(now: now)
         var sx: CGFloat = 1, sy: CGFloat = 1, rot: Double = 0, hop: CGFloat = 0
         var eyeW = s * 0.15, eyeH = s * 0.26, tilt: Double = 0
         var look = CGSize.zero
+        var mouth: CGFloat = 0
+        var glow = 0.0
         switch state {
         case .idle, .done:
-            eyeH = s * 0.11
-            if animated, t.truncatingRemainder(dividingBy: 5.3) < 0.14 { eyeH = s * 0.035 }
+            eyeH = s * 0.20
+            eyeW = s * 0.15 + s * 0.02 * sleep
+            if animated {
+                // Breathing, slower while asleep.
+                let period = 4.5 + 2.0 * sleep
+                let b = sin(t * 2 * .pi / period)
+                let amp = 0.04 - 0.008 * sleep
+                sx = 1 + amp * b; sy = sx
+                // Blink, glance around every few seconds, small gesture every 20-40 s.
+                if sleep == 0 {
+                    if t.truncatingRemainder(dividingBy: 5.3) < 0.14 { eyeH = s * 0.035 }
+                    let g = t.truncatingRemainder(dividingBy: 7.7)
+                    if g < 1.4 {
+                        let dir: CGFloat = Int(t / 7.7) % 2 == 0 ? 1 : -1
+                        look = CGSize(width: dir * 0.09 * s * sin(.pi * g / 1.4), height: 0)
+                    }
+                    if let (action, u) = MicroAction.current(t: t, seed: BlobKind.seed(seed)) {
+                        let e = CGFloat(sin(.pi * u / action.duration))
+                        switch action {
+                        case .yawn:
+                            mouth = e; eyeH = s * (0.20 - 0.15 * e); sy = 1 + 0.05 * e
+                        case .stretch:
+                            sy = 1 + 0.16 * e; sx = 1 - 0.09 * e; eyeH = s * (0.20 - 0.13 * e)
+                        case .follow:
+                            let m = mouseLook(frame: frame)
+                            look = CGSize(width: m.width * e, height: m.height * e)
+                        case .wiggle:
+                            rot = 11 * exp(-1.6 * u) * sin(u * 15)
+                        }
+                    }
+                }
+                // Wake-up hop after sleeping.
+                if let wakeAt {
+                    let w = now.timeIntervalSince(wakeAt)
+                    if w >= 0, w < 1 {
+                        hop = -0.20 * s * CGFloat(exp(-3.5 * w) * abs(sin(w * 9)))
+                        if w < 0.5 { eyeH = max(eyeH, s * 0.30) }
+                    }
+                }
+                eyeH = eyeH + (s * 0.035 - eyeH) * CGFloat(sleep)
+            } else {
+                eyeH = s * 0.20 + (s * 0.035 - s * 0.20) * CGFloat(sleep)
+            }
+            if state == .done, animated, let stateSince {
+                let age = now.timeIntervalSince(stateSince)
+                if age >= 0, age < BarTheme.doneGlowDuration { glow = pow(1 - age / BarTheme.doneGlowDuration, 1.6) }
+            }
         case .working:
             eyeH = s * 0.24
             if animated {
@@ -136,18 +291,51 @@ struct BlobView: View {
         }
         let limit = s * 0.10
         let dx = max(-limit, min(limit, look.width)), dy = max(-limit, min(limit, look.height))
+        let eyeOffsetY = (kind.eyeY - 0.5) * s + dy
+        let c = color(sleep: sleep)
+        let ringColor = tint ?? Color.white
         return ZStack {
-            BlobShape(kind: kind).fill(color)
-            HStack(spacing: s * 0.13) {
-                Capsule().fill(Color.white).frame(width: eyeW, height: eyeH).rotationEffect(.degrees(tilt))
-                Capsule().fill(Color.white).frame(width: eyeW, height: eyeH).rotationEffect(.degrees(-tilt))
+            if glow > 0 {
+                BlobShape(kind: kind).stroke(ringColor, lineWidth: s * 0.12)
+                    .blur(radius: s * 0.08)
+                    .scaleEffect(1.10 + 0.22 * (1 - glow))
+                    .opacity(0.75 * glow)
             }
-            .offset(x: dx, y: (kind.eyeY - 0.5) * s + dy)
+            ZStack {
+                BlobShape(kind: kind).fill(c)
+                HStack(spacing: s * 0.13) {
+                    Capsule().fill(Color.white).frame(width: eyeW, height: eyeH).rotationEffect(.degrees(tilt))
+                    Capsule().fill(Color.white).frame(width: eyeW, height: eyeH).rotationEffect(.degrees(-tilt))
+                }
+                .offset(x: dx, y: eyeOffsetY)
+                if mouth > 0.02 {
+                    Ellipse().fill(Color.black.opacity(0.55))
+                        .frame(width: s * 0.20 * mouth, height: s * 0.26 * mouth)
+                        .offset(x: dx * 0.5, y: eyeOffsetY + s * 0.22)
+                }
+            }
+            .frame(width: s, height: s)
+            .scaleEffect(x: sx, y: sy)
+            .rotationEffect(.degrees(rot))
+            .offset(y: hop)
+            if sleep > 0.99, animated { sleepZ(t: t) }
         }
         .frame(width: s, height: s)
-        .scaleEffect(x: sx, y: sy)
-        .rotationEffect(.degrees(rot))
-        .offset(y: hop)
+    }
+
+    /// Two small "z" that rise and fade beside the sleeping blob.
+    private func sleepZ(t: Double) -> some View {
+        let s = size
+        return ZStack {
+            ForEach(0..<2, id: \.self) { i in
+                let p = (t / 3.4 + Double(i) * 0.5).truncatingRemainder(dividingBy: 1)
+                Text("z").font(.system(size: s * (0.26 + 0.10 * p), weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white)
+                    .opacity(sin(.pi * p) * 0.7)
+                    .offset(x: s * (0.34 + 0.12 * p), y: -s * (0.22 + 0.42 * p))
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     /// Eye offset towards the pointer (screen coordinates), used by the attentive needs-input blob.
@@ -166,5 +354,8 @@ struct BlobView: View {
 struct StatusCircle: View {
     let state: SessionState
     var size: CGFloat = 18
-    var body: some View { BlobView(state: state, kind: .circle, size: size) }
+    /// Color of the most important agent (see `SessionLook.aggregateTint`); nil keeps the soft white/grey. Needs-input and
+    /// error always show their warning color regardless of the tint. Never falls asleep (no `stateSince`).
+    var tint: Color? = nil
+    var body: some View { BlobView(state: state, kind: .circle, size: size, tint: tint, seed: "aggregate") }
 }

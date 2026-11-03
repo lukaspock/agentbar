@@ -5,6 +5,16 @@ enum BarTheme {
     static let needsInput = Color(red: 1.0, green: 0.62, blue: 0.04)
     static let error = Color(red: 1.0, green: 0.30, blue: 0.36)
     static let idle = Color.white.opacity(0.40)
+    /// Brightness of the agent colour while a blob rests (idle/done).
+    static let idleDim = 0.55
+    /// Idle time until the blob falls asleep. Override for testing: env `AGENTBAR_IDLE_SLEEP_SECONDS`.
+    static let idleSleepAfter: TimeInterval = {
+        ProcessInfo.processInfo.environment["AGENTBAR_IDLE_SLEEP_SECONDS"].flatMap(TimeInterval.init) ?? 180
+    }()
+    /// Afterglow ring after a session finished. Override for testing: env `AGENTBAR_GLOW_SECONDS`.
+    static let doneGlowDuration: TimeInterval = {
+        ProcessInfo.processInfo.environment["AGENTBAR_GLOW_SECONDS"].flatMap(TimeInterval.init) ?? 10
+    }()
     static let spring = Animation.spring(response: 0.45, dampingFraction: 0.86)
 
     static func color(for state: SessionState) -> Color {

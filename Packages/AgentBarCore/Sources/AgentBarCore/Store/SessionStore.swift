@@ -51,9 +51,8 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
     private var waiters: [String: @Sendable (AgentResponse) -> Void] = [:]
     private var timers: [String: Task<Void, Never>] = [:]
 
-    /// Ended sessions (state done after `end`) are removed after this long, or earlier when more than
-    /// `maxListedSessions` sessions exist (oldest ended first).
-    public static let endedRetention: TimeInterval = 600
+    /// Ended sessions (state done after `end`) stay listed until the user closes them (remove). Only when more than
+    /// `maxListedSessions` sessions exist, the oldest ended ones are dropped so the list cannot grow without bound.
     public static let maxListedSessions = 20
 
     private var endedAt: [String: Date] = [:]
@@ -64,7 +63,7 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
 
     deinit { maintenance?.cancel() }
 
-    /// Starts the periodic pruning of ended sessions (call once from the app).
+    /// Starts the periodic cap check for ended sessions (call once from the app). Ended sessions do NOT expire by time.
     public func startMaintenance(interval: TimeInterval = 30) {
         maintenance?.cancel()
         maintenance = Task { @MainActor [weak self] in
@@ -76,14 +75,10 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         }
     }
 
-    /// Removes ended sessions that are older than the retention, then the oldest ended ones beyond the list cap.
+    /// Keeps the list bounded: only if more than `maxListedSessions` sessions exist, the oldest ended ones (done, no open
+    /// request) are removed. There is no time-based expiry: done sessions stay until the user closes them.
     public func pruneEnded() {
-        let cutoff = now().addingTimeInterval(-Self.endedRetention)
         let before = sessions.count
-        sessions.removeAll { s in
-            guard s.state == .done, s.pendingRequests.isEmpty, let t = endedAt[s.id] else { return false }
-            return t <= cutoff
-        }
         if sessions.count > Self.maxListedSessions {
             let victims = sessions.filter { $0.state == .done && $0.pendingRequests.isEmpty && endedAt[$0.id] != nil }
                 .sorted { (endedAt[$0.id] ?? .distantPast) < (endedAt[$1.id] ?? .distantPast) }

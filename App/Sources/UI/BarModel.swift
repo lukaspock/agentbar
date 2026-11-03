@@ -15,6 +15,9 @@ struct BarLayout {
     var dotTrailingPadding: CGFloat = 0
     var draggable = false
 
+    /// Width of the small panel shown instead of the detail panel while no agent session exists (mascot + "New session").
+    var emptyExpandedWidth: CGFloat { min(expandedWidth, 270) }
+
     static let windowSize = CGSize(width: 800, height: 560)
 
     static func make(style: PresentationStyle, notch: NotchMetrics, screen: NSScreen) -> BarLayout {
@@ -71,10 +74,16 @@ final class BarViewModel: ObservableObject {
     @Published var offsetX: CGFloat = 0
     @Published var selectedSessionId: String?
     @Published private(set) var isEditing = false
+    /// True while an inline flow (New session) is shown: the panel stays open (the pointer may be in a folder dialog) and key.
+    @Published private(set) var flowActive = false
 
     /// Visible shape in window coordinates (top-left origin); written by the view, read by the pointer poll.
     var contentHeight: CGFloat = 160   // measured height of the expanded content (written by the shell)
+    /// True while the store has no sessions: the shell shows the mascot panel, so the visible shape is narrower.
+    var showsEmptyState = false
+    var expandedWidth: CGFloat { showsEmptyState ? layout.emptyExpandedWidth : layout.expandedWidth }
     let pinnedExpanded: Bool
+    /// Called with true when the panel should become key (typing, flow keys) and false when it can release the key.
     var keyHandler: ((Bool) -> Void)?
     var onDrag: ((DragPhase) -> Void)?
 
@@ -104,12 +113,12 @@ final class BarViewModel: ObservableObject {
         if inside {
             collapseWork?.cancel(); collapseWork = nil
             if !expanded { expanded = true }
-        } else if expanded, !isEditing, !pinnedExpanded, collapseWork == nil {
+        } else if expanded, !isEditing, !flowActive, !pinnedExpanded, collapseWork == nil {
             let work = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.collapseWork = nil
-                    if !self.pointerInside && !self.isEditing { self.expanded = false }
+                    if !self.pointerInside && !self.isEditing && !self.flowActive { self.expanded = false }
                 }
             }
             collapseWork = work
@@ -120,7 +129,20 @@ final class BarViewModel: ObservableObject {
     func setEditing(_ editing: Bool) {
         guard editing != isEditing else { return }
         isEditing = editing
-        keyHandler?(editing)
+        keyHandler?(editing || flowActive)
         if !editing { pointerChanged(pointerInside) }
+    }
+
+    /// Starts/ends an inline flow in the panel: opens the panel, keeps it open and key while active (Enter/Esc need the
+    /// key window); afterwards the normal collapse logic applies again.
+    func setFlowActive(_ active: Bool) {
+        guard active != flowActive else { return }
+        flowActive = active
+        if active {
+            collapseWork?.cancel(); collapseWork = nil
+            if !expanded { expanded = true }
+        }
+        keyHandler?(active || isEditing)
+        if !active { pointerChanged(pointerInside) }
     }
 }

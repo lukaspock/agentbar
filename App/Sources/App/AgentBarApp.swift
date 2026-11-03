@@ -43,6 +43,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         presentations = manager
         self.menu = menu
         manager.start()
+        if env.options.demoNewChat { DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { NewChatFlow.run() } }
+        if env.options.demoAgentUser { DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { PanelRouter.shared.openAgentUser() } }
         // SIGTERM/SIGINT (e.g. `pkill AgentBar`) go through a normal quit so socket and token get removed.
         for sig in [SIGTERM, SIGINT] {
             signal(sig, SIG_IGN)

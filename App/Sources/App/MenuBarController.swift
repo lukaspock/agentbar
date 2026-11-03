@@ -28,6 +28,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        if let page = LaunchOptions.current.demoSettings {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { SettingsWindowController.show(page: SettingsPage(rawValue: page) ?? .theme) }
+        }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -42,11 +45,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
         if ChatHub.shared.backend != nil {
-            let chat = NSMenuItem(title: "New chat session…", action: #selector(newChat), keyEquivalent: "n")
+            let chat = NSMenuItem(title: "New session…", action: #selector(newChat), keyEquivalent: "n")
             chat.target = self
             menu.addItem(chat)
-            menu.addItem(.separator())
         }
+        menu.addItem(AgentUserMenu.menuItem())
+        menu.addItem(.separator())
         for factory in extraMenuItems { menu.addItem(factory()) }
         if !extraMenuItems.isEmpty { menu.addItem(.separator()) }
 
@@ -64,6 +68,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(toggleItem("Sound on new request", on: AttentionSettings.soundEnabled, action: #selector(toggleSound)))
         menu.addItem(toggleItem("Auto-expand on new request", on: AttentionSettings.autoExpandEnabled, action: #selector(toggleAutoExpand)))
         menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit AgentBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
@@ -73,6 +81,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         item.state = on ? .on : .off
         return item
     }
+
+    @objc private func openSettings() { SettingsWindowController.show() }
 
     @objc private func newChat() { NewChatFlow.run() }
 

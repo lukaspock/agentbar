@@ -26,15 +26,18 @@ final class StoreHardeningTests: XCTestCase {
         XCTAssertEqual(s.sessions[0].state, .working)
     }
 
-    func testEndedSessionRemovedAfterRetention() {
+    /// User decision: finished sessions stay visible until the user closes them (no time-based expiry).
+    func testEndedSessionStaysUntilUserRemovesIt() {
         var t = Date()
         let s = SessionStore(now: { t })
         s.apply(.sessionUpdate(id: "x", name: "x", kind: nil, state: .working, action: nil, supportsStop: nil))
         s.apply(.sessionUpdate(id: "live", name: "live", kind: nil, state: .working, action: nil, supportsStop: nil))
         s.apply(.sessionEnd(id: "x"))
-        t = t.addingTimeInterval(SessionStore.endedRetention - 5); s.pruneEnded()
-        XCTAssertEqual(s.sessions.count, 2)
-        t = t.addingTimeInterval(10); s.pruneEnded()
+        t = t.addingTimeInterval(24 * 3600); s.pruneEnded()
+        t = t.addingTimeInterval(7 * 24 * 3600); s.pruneEnded()
+        XCTAssertEqual(Set(s.sessions.map(\.id)), ["x", "live"])
+        XCTAssertEqual(s.sessions.first { $0.id == "x" }?.state, .done)
+        s.remove(sessionId: "x")
         XCTAssertEqual(s.sessions.map(\.id), ["live"])
     }
 
@@ -44,8 +47,9 @@ final class StoreHardeningTests: XCTestCase {
         s.apply(.sessionUpdate(id: "x", name: "x", kind: nil, state: .working, action: nil, supportsStop: nil))
         s.apply(.sessionEnd(id: "x"))
         s.apply(.sessionUpdate(id: "x", name: nil, kind: nil, state: .working, action: nil, supportsStop: nil))
-        t = t.addingTimeInterval(SessionStore.endedRetention + 5); s.pruneEnded()
+        t = t.addingTimeInterval(3600); s.pruneEnded()
         XCTAssertEqual(s.sessions.count, 1)
+        XCTAssertEqual(s.sessions[0].state, .working)
     }
 
     func testOldestEndedRemovedBeyondCap() {

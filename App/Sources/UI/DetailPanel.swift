@@ -33,6 +33,8 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
     @Binding var contentHeight: CGFloat
     @StateObject private var guardModel = ApprovalGuardModel()
     @ObservedObject private var hub = ChatHub.shared
+    @ObservedObject private var router = PanelRouter.shared
+    @ObservedObject private var prefs = PreferencesHub.shared
 
     /// One card per session (its oldest request), ordered oldest request first; independent of session state.
     private var openRequests: [(sessionId: String, request: AgentRequest)] {
@@ -51,7 +53,9 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
         .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
         .onAppear { guardModel.observe(order: openRequests.map(\.request.requestId)); guardModel.layoutChanged() }
         .onChange(of: openRequests.map(\.request.requestId)) { _, ids in guardModel.observe(order: ids) }
-        .onChange(of: contentHeight) { _, _ in guardModel.layoutChanged() }
+        .onChange(of: contentHeight) { _, _ in guardModel.layoutChanged(); router.flow?.lock() }
+        .onChange(of: router.page) { _, _ in guardModel.layoutChanged() }
+        .onAppear { router.onSessionStarted = { id in withAnimation(BarTheme.spring) { model.selectedSessionId = id } } }
         .onChange(of: model.expanded) { _, _ in
             // Opened by a new request (not by the user): keep the buttons locked longer, the pointer may rest anywhere.
             let auto = model.lastAutoExpand.map { Date().timeIntervalSince($0) < 0.5 } ?? false
@@ -68,66 +72,87 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            if store.sessions.isEmpty {
-                Text("No agents connected").font(.system(size: 13)).foregroundStyle(.white.opacity(0.5))
-            }
-            let open = openRequests
-            let order = open.map(\.request.requestId)
-            let _ = guardModel.epoch   // re-render when a settle window ends
-            ForEach(open, id: \.request.requestId) { item in
-                if let session = store.sessions.first(where: { $0.id == item.sessionId }) {
-                    RequestCard(session: session, request: item.request, extra: session.pendingRequests.count - 1,
-                                armed: guardModel.isArmed(item.request.requestId, currentOrder: order),
-                                canAnswer: { canAnswer(requestId: item.request.requestId, sessionId: item.sessionId) },
-                                sink: store, model: model)
-                }
-            }
-            if !store.sessions.isEmpty {
-                let groups = SessionGrouping.groups(store.sessions)
-                VStack(spacing: 2) {
-                    ForEach(groups) { group in
-                        if group.sessions.count > 1 { GroupHeader(group: group) }
-                        ForEach(group.sessions) { session in
-                            SessionRow(session: session, selected: session.id == selected?.id,
-                                       disambiguate: group.sessions.count > 1, sink: store)
-                                .onTapGesture { withAnimation(BarTheme.spring) { model.selectedSessionId = model.selectedSessionId == session.id ? nil : session.id } }
-                                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-                        }
-                    }
-                }
-                .animation(BarTheme.spring, value: groups.flatMap { $0.sessions.map(\.id) })
-                if store.sessions.contains(where: { removableQuietly($0) }) {
-                    Button {
-                        withAnimation(BarTheme.spring) {
-                            for s in store.sessions where removableQuietly(s) { store.remove(sessionId: s.id) }
-                        }
-                    } label: {
-                        Text("Clear finished").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-                            .padding(.vertical, 2).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.horizontal, 10)
-                    .transition(.opacity)
-                }
-            }
-            if let selected {
-                if hub.supportsChat(selected), let backend = hub.backend {
-                    ChatPanel(session: selected, backend: backend, sink: store, model: model)
-                } else if !selected.history.isEmpty {
-                    HistoryList(session: selected)
-                }
-            }
-            if selected == nil, hub.backend != nil {
-                NewSessionButton().frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10)
+        let _ = prefs.revision
+        return VStack(alignment: .leading, spacing: 16) {
+            if router.page == nil { header }
+            requestCards
+            switch router.page {
+            case .newSession:
+                if let flow = router.flow { NewSessionFlowView(model: flow, barModel: model).transition(.opacity) }
+            case .agentUser:
+                AgentUserStatusCard { withAnimation(BarTheme.spring) { router.close() } }.transition(.opacity)
+            case nil:
+                sessionList.transition(.opacity)
             }
         }
+        .animation(BarTheme.spring, value: router.page)
         .padding(.top, model.layout.expandedTopPadding)
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
         .frame(width: model.layout.expandedWidth, alignment: .leading)
+    }
+
+    /// Approvals stay on top of every page: a request must never hide behind the New session flow.
+    @ViewBuilder private var requestCards: some View {
+        let open = openRequests
+        let order = open.map(\.request.requestId)
+        let _ = guardModel.epoch   // re-render when a settle window ends
+        ForEach(open, id: \.request.requestId) { item in
+            if let session = store.sessions.first(where: { $0.id == item.sessionId }) {
+                RequestCard(session: session, look: SessionLook.resolve(session, store: prefs.store),
+                            request: item.request, extra: session.pendingRequests.count - 1,
+                            armed: guardModel.isArmed(item.request.requestId, currentOrder: order),
+                            canAnswer: { canAnswer(requestId: item.request.requestId, sessionId: item.sessionId) },
+                            sink: store, model: model)
+            }
+        }
+    }
+
+    @ViewBuilder private var sessionList: some View {
+        if store.sessions.isEmpty {
+            Text("No agents connected").font(.system(size: 13)).foregroundStyle(.white.opacity(0.5))
+        }
+        if !store.sessions.isEmpty {
+            let groups = SessionGrouping.groups(store.sessions)
+            VStack(spacing: 2) {
+                ForEach(groups) { group in
+                    if group.sessions.count > 1 { GroupHeader(group: group) }
+                    ForEach(group.sessions) { session in
+                        SessionRow(session: session, look: SessionLook.resolve(session, store: prefs.store),
+                                   selected: session.id == selected?.id,
+                                   disambiguate: group.sessions.count > 1, sink: store, model: model)
+                            .onTapGesture { withAnimation(BarTheme.spring) { model.selectedSessionId = model.selectedSessionId == session.id ? nil : session.id } }
+                            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                    }
+                }
+            }
+            .animation(BarTheme.spring, value: groups.flatMap { $0.sessions.map(\.id) })
+            if store.sessions.contains(where: { removableQuietly($0) }) {
+                Button {
+                    withAnimation(BarTheme.spring) {
+                        for s in store.sessions where removableQuietly(s) { store.remove(sessionId: s.id) }
+                    }
+                } label: {
+                    Text("Clear finished").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                        .padding(.vertical, 2).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 10)
+                .transition(.opacity)
+            }
+        }
+        if let selected {
+            if hub.supportsChat(selected), let backend = hub.backend {
+                ChatPanel(session: selected, look: SessionLook.resolve(selected, store: prefs.store),
+                          backend: backend, sink: store, model: model)
+            } else if !selected.history.isEmpty {
+                HistoryList(session: selected)
+            }
+        }
+        if selected == nil, hub.backend != nil {
+            NewSessionButton().frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10)
+        }
     }
 
     /// done/idle sessions without pending requests: safe to remove without any confirmation.
@@ -137,7 +162,8 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            StatusCircle(state: store.aggregateState, size: 16)
+            StatusCircle(state: store.aggregateState, size: 16,
+                         tint: SessionLook.aggregateTint(sessions: store.sessions, state: store.aggregateState, store: prefs.store))
             Text(BarTheme.label(for: store.aggregateState))
                 .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
             Spacer()
@@ -151,6 +177,7 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
 
 private struct RequestCard<Sink: ResponseSink>: View {
     let session: AgentSession
+    let look: SessionLook
     let request: AgentRequest
     let extra: Int
     let armed: Bool                    // false while the card just appeared/moved or the panel is animating
@@ -161,8 +188,15 @@ private struct RequestCard<Sink: ResponseSink>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
+                Circle().fill(look.color).frame(width: 8, height: 8)
                 Image(systemName: BarTheme.icon(for: session.kind)).font(.system(size: 11))
-                Text(session.name).font(.system(size: 12, weight: .medium))
+                // The display name (owner's rename or bot) only adds; the real project name stays visible.
+                if look.project(of: session) != nil {
+                    Text(look.displayName).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                    Text("· \(session.name)").font(.system(size: 12, weight: .medium))
+                } else {
+                    Text(session.name).font(.system(size: 12, weight: .medium))
+                }
                 if extra > 0 { Text("+\(extra) more waiting").font(.system(size: 11)).opacity(0.7) }
             }
             .foregroundStyle(.white.opacity(0.55))
@@ -306,26 +340,27 @@ struct PillButton: View {
 
 private struct SessionRow<Sink: ResponseSink>: View {
     let session: AgentSession
+    let look: SessionLook
     let selected: Bool
     var disambiguate = false          // several sessions of one project: show a short id to tell them apart
     let sink: Sink
+    @ObservedObject var model: BarViewModel
     @State private var hovering = false
     @State private var confirming = false
+    @State private var renaming = false
+    @State private var draft = ""
 
     /// Removing a session that is working or has open requests cancels the agent's request => needs a second click.
     private var needsConfirm: Bool { session.state == .working || session.state == .needsInput || !session.pendingRequests.isEmpty }
     private var quiet: Bool { [.done, .idle, .error].contains(session.state) && session.pendingRequests.isEmpty }
+    private var store: PreferencesStore { PreferencesHub.shared.store }
 
     var body: some View {
         HStack(spacing: 10) {
-            BlobView(state: session.state, kind: .forSession(session.id), size: 26,
-                     tint: BlobKind.tint(forSession: session.id))
+            BlobView(state: session.state, kind: look.kind, size: 26, tint: look.color,
+                     stateSince: session.updatedAt, seed: session.id)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(session.name).font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
-                    Image(systemName: BarTheme.icon(for: session.kind))
-                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
-                }
+                if renaming { renameEditor } else { titleLine }
                 HStack(spacing: 5) {
                     Circle().fill(BarTheme.color(for: session.state)).frame(width: 6, height: 6)
                     Text(BarTheme.label(for: session.state)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
@@ -338,29 +373,115 @@ private struct SessionRow<Sink: ResponseSink>: View {
                             .foregroundStyle(.white.opacity(0.3))
                     }
                 }
-                if let action = session.currentAction {
+                if let action = session.currentAction, !renaming {
                     Text(action).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
+                if renaming { swatchRow }
             }
             Spacer(minLength: 8)
-            if session.supportsStop { StopButton(session: session, sink: sink) }
-            removeButton
+            if session.supportsStop && !renaming { StopButton(session: session, sink: sink) }
+            if !renaming { removeButton }
         }
         .onHover { hovering = $0 }
         .animation(BarTheme.spring, value: hovering)
         .animation(BarTheme.spring, value: confirming)
+        .animation(BarTheme.spring, value: renaming)
         .task(id: confirming) {
             guard confirming else { return }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled { confirming = false }
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(selected ? 0.10 : 0)))
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(selected || renaming ? 0.10 : 0)))
         .overlay(alignment: .leading) {
-            Capsule().fill(Color.white.opacity(0.7)).frame(width: 2.5, height: 22).opacity(selected ? 1 : 0)
+            Capsule().fill(look.color.opacity(0.9)).frame(width: 2.5, height: 22).opacity(selected ? 1 : 0)
         }
         .contentShape(Rectangle())
+        .contextMenu {
+            Button("Rename / color…") { beginRename() }
+            if look.customized {
+                Button("Reset name and color") {
+                    try? store.setSessionName(session.id, nil)
+                    try? store.setSessionColor(session.id, nil)
+                }
+            }
+        }
+        .onAppear {
+            if LaunchOptions.current.demoRename == session.id, !renaming { beginRename() }
+        }
+    }
+
+    private var titleLine: some View {
+        HStack(spacing: 5) {
+            Text(look.displayName).font(.system(size: 13, weight: .medium)).foregroundStyle(.white).lineLimit(1)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { beginRename() }
+                .help("Double-click to rename")
+            Image(systemName: BarTheme.icon(for: session.kind))
+                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+            if let project = look.project(of: session) {
+                Text(project).font(.system(size: 10)).foregroundStyle(.white.opacity(0.35)).lineLimit(1)
+            }
+            if ChatHub.shared.backend?.runsAsAgent(sessionId: session.id) == true { RunsAsChip() }
+        }
+    }
+
+    // MARK: rename / color (inline, no extra window)
+
+    private func beginRename() {
+        draft = look.displayName
+        withAnimation(BarTheme.spring) { renaming = true }
+    }
+
+    private func finishRename(save: Bool) {
+        guard renaming else { return }
+        if save {
+            let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Unchanged text keeps an automatic name automatic; empty clears the session's own name.
+            if trimmed != look.displayName { try? store.setSessionName(session.id, trimmed.isEmpty ? nil : trimmed) }
+        }
+        withAnimation(BarTheme.spring) { renaming = false }
+    }
+
+    private var renameEditor: some View {
+        InlineTextField(text: $draft, placeholder: "Name", limit: PreferenceText.maxNameLength, focusOnAppear: true,
+                        onEditing: { model.setEditing($0) },
+                        onSubmit: { finishRename(save: true) },
+                        onCancel: { finishRename(save: false) },
+                        onEnd: { finishRename(save: true) })
+            .frame(height: 20)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.14)))
+    }
+
+    private var swatchRow: some View {
+        HStack(spacing: 6) {
+            ForEach(SessionSwatches.hexes, id: \.self) { hex in
+                Button { try? store.setSessionColor(session.id, hex) } label: {
+                    Circle().fill(Color(hex: hex) ?? .gray).frame(width: 14, height: 14)
+                        .overlay(Circle().stroke(Color.white, lineWidth: look.colorHex == hex ? 2 : 0).padding(-2))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(hex)
+            }
+            Button {
+                try? store.setSessionColor(session.id, nil)
+            } label: {
+                Image(systemName: "arrow.uturn.backward").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                    .frame(width: 16, height: 16).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Back to the automatic color")
+            Spacer(minLength: 0)
+            Button { finishRename(save: true) } label: {
+                Text("Done").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
+                    .padding(.horizontal, 9).padding(.vertical, 3).background(Capsule().fill(Color.white))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.top, 2)
     }
 
     @ViewBuilder private var removeButton: some View {
@@ -507,6 +628,7 @@ private struct ChatEndKey: PreferenceKey {
 /// Conversation with one chat-capable session: transcript (oldest first, follows the end), input, send and stop.
 private struct ChatPanel<Sink: ResponseSink>: View {
     let session: AgentSession
+    let look: SessionLook
     let backend: ChatBackend
     let sink: Sink
     @ObservedObject var model: BarViewModel
@@ -520,7 +642,14 @@ private struct ChatPanel<Sink: ResponseSink>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Chat · \(session.name)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                Circle().fill(look.color).frame(width: 7, height: 7)
+                Text("Chat · \(look.displayName)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(1)
+                if let project = look.project(of: session) {
+                    Text(project).font(.system(size: 10)).foregroundStyle(.white.opacity(0.3)).lineLimit(1)
+                }
+                if let bot = look.botName, bot != look.displayName { BotChip(name: bot, color: look.color) }
+                if backend.runsAsAgent(sessionId: session.id) { RunsAsChip() }
                 Spacer()
                 if busy { Text("working…").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)) }
             }

@@ -147,3 +147,84 @@ disconnect, e2e SIGKILL of a hook client).
   one-click-allow path), `state:"done"` ends the session, output always empty, forged `request`/`answer` logs ignored. Via `update --action` the
   store applies the same sanitizing for sessions of kind `computerUse`.
 - Pause is not in the frozen `ResponseSink`; UI can call `SessionStore.pause/resume` directly (state stays unchanged, the agent reports `paused` via action).
+
+## Phase 4: agent user (role model, group socket) - additive, Contract/ untouched
+Spec: `Docs/PLAN-agent-user.md`. Stage 1: hooks of `claude` running as another macOS user (`agentbar`) report to the owner's bar.
+- **Roles** (`PeerRole`, decided by the kernel-reported peer uid via `getpeereid`, never by request content): `.owner` (uid running AgentBar) and
+  `.agent` (uid of the agent user). `TransportSecurity` holds `ownerUid`, `agentUid?`, the shared directory/group/modes, per-role quota and an
+  injectable `peerCredentials` (tests use fake uids). Unknown uid => connection closed. `TransportSecurity()` = single-user mode as before.
+  `TransportSecurity.detected()` (used by the app) enables two-user mode only if user `agentbar` AND group `agentbar-ipc` exist and no `AGENTBAR_DIR` is set.
+- **Sockets**: owner socket unchanged (`~/Library/Application Support/AgentBar/agentbar.sock`, dir 0700, socket 0600, serves `.owner` only).
+  Group socket `/Users/Shared/AgentBar/agentbar.sock` (dir 0750 owner:`agentbar-ipc` - group write is refused on purpose, it would let the agent
+  swap socket/token; socket 0660 same group; serves `.owner` and `.agent`). Group missing / mode insecure / chown refused => group listener stays off
+  (`TransportServer.sharedStatus == .unavailable(reason)`), owner socket unaffected.
+- **Tokens per role**: `token` (0600, owner dir, role owner) and `token.agent` (0640 owner:group, shared dir, role agent). A token only opens its own role.
+  Written temp+rename. `rotateTokens(grace:)` replaces all tokens; old ones stay valid `grace` s (default 60); connections that already
+  authenticated (`watch`) are unaffected. Both files are removed on `stop()` (socket first).
+- **Agent role may use**: `update log end remove ask payload watch`; any other op => `{"ok":false,"error":"forbidden"}`. Only on session ids it created
+  itself: an id that is chat-owned, was touched by the owner role, or exists in the store without agent origin => `session reserved`. The owner may touch
+  any id and thereby takes it over. Side table `SessionOrigins` (transport-internal, FROZEN `AgentSession` untouched).
+- **Quotas (agent role)**: 128 connections, 40 sessions (`too many sessions`), 40 pending requests (`too many pending requests`; for hook payloads: no
+  decision = agent's own dialog). Global caps stay.
+- **Double-approval guard**: `ChatSession` reserves claude's own session id (from `system/init`) as chat-owned while the process lives, so hooks of that
+  claude (e.g. via the agent user's `~/.claude/settings.json`) get `session reserved` instead of a second approval.
+- **CLI**: endpoint order `AGENTBAR_DIR` > owner dir (`$HOME/Library/Application Support/AgentBar`) if its socket exists > shared dir
+  (`AGENTBAR_SHARED_DIR` or `/Users/Shared/AgentBar`) if socket exists and a token file is readable > owner dir (unreachable). Token: `token`, else `token.agent`.
+
+## Phase 5: agent-user host (stage 2, packages P0+P3+P4) - additive, Contract/ untouched
+Spec: `Docs/PLAN-agent-user.md`. Chats started from the bar run `claude` as the agent user via `agentbar-host`. The host is a DUMB PIPE: all
+security logic (approval rendering, `safeAlwaysRule`, chat-owned reservation incl. claude's own session id, sanitizing, `answered`) stays in the
+owner's `ChatSession`. NOT part of this phase: `hookplan`/`hookapply` (hooks through the host), UI, LaunchDaemon/scripts.
+
+**Op `host`** (`TransportSecurity.agentOps` + `TransportServer.process` -> `HostClient.acceptHost`): role `.agent` only (owner => `forbidden`), token of the
+agent role as for every op. Long-lived duplex connection; at most ONE host at a time (`host already connected`, a dead link is detected within 20 s).
+Handshake, host -> app, one line (`HostHello`):
+`{"token","op":"host","protocol":1,"user":"agentbar","uid":N,"workspaceRoot":"/Users/agentbar/work","agents":{"claude":"/path"}}`
+=> app replies `{"ok":true,"event":"ready","protocol":1,"maxLine":1048576}` (errors: `unsupported protocol`, `invalid hello`, `host already connected`).
+The host must not send frames before `ready`. `user`/`workspaceRoot`/`agents` are display data (control/format characters rejected, bounded); the
+identity is the kernel peer uid (`HostClient.Info.uid`). After `ready` both directions are `\n`-separated JSON frames, **max 1 MiB per line for this channel
+only** (all other ops keep 64 KiB; oversize => link closed). No store op (`update/log/ask/...`) exists on this channel.
+
+**App -> host** (`HostCommand`, discriminator `op`):
+`spawn {id,agent:"claude",workspace,model?,maxBudgetUSD?,tools?,permissionMode?}` (no executable, no env, no absolute path), `stdin {id,line}`,
+`terminate {id}` (SIGTERM to the process GROUP + close stdin), `kill {id}` (SIGKILL group), `workspaces {rid}`, `mkworkspace {rid,name}`, `ping`.
+**Host -> app** (`HostEvent`, discriminator `ev`): `spawned {id,pid}`, `spawnFailed {id,error}`, `stdout {id,line}`, `stderr {id,b64}`,
+`exit {id,status}` (exactly once, after stdout ended; 128+n = signal n), `workspaces {rid,items:[{name,mtime}]}`, `workspaceCreated {rid,name}`,
+`pong`, `error {id?,rid?,error}`. Codable types: `Host/HostProtocol.swift`.
+
+**IDs are chosen by the app only** (`RemoteChatProcess.processId`, request ids `rid`). Process ids/rids: `[A-Za-z0-9._-]{1,64}`. The app drops frames for
+unknown ids, stdout/stderr/exit before `spawned`, and a second `exit` (`HostClient.droppedFrames`). A duplicate spawn id gets `error{id}` and does not touch the
+running process. Max 16 processes (`too many agent processes`). Unknown/malformed frames: `error` event (host) / ignored (app); link stays up.
+**Spawn errors** arrive as `spawnFailed`; the app delivers them as `onStderr("<reason>\n")` + `onExit(127)` (existing "claude exited with 127" path).
+Only "host not connected" at `start` time throws (`ChatError.spawnFailed`). Host link lost => every remote process gets `onStderr("agent host disconnected")` + `onExit(255)`.
+
+**Workspaces** (`WorkspaceStore`): ONE path component `[A-Za-z0-9][A-Za-z0-9._-]{0,59}` directly below `~/work` of the agent user (from the password database).
+`..`, `/`, absolute paths, hidden names and non-ASCII cannot be expressed; additionally lstat (real directory, not a symlink, owned by the host uid),
+`realpath == <real root>/<name>`, and the root itself must be a real directory (no symlink). `mkworkspace` creates mode 0700 and refuses existing names.
+`workspaces` lists real, owned directories with valid names only (max 500). (Same-uid TOCTOU swaps are out of scope: containment, not a sandbox.)
+
+**Child environment** (`HostEnvironment.build`) is built from scratch, nothing inherited: `HOME USER LOGNAME SHELL PATH LANG TMPDIR` (+ `CLAUDE_CODE_OAUTH_TOKEN`).
+Token from `~/.config/agentbar/claude-oauth-token`: regular file, not a symlink, owned by the host uid, no group/world bits, <= 8 KiB, printable ASCII; unsafe
+file => the spawn fails (host stays up); missing file => no token (claude falls back to its own credentials). `ANTHROPIC_API_KEY` & co. are never set, so
+the token is never combined with an API key. Arguments come from `ChatConfig.launchSpec` (the same whitelist as locally); `permissionMode` has no bypass values.
+`TMPDIR` = `~/.agentbar/tmp/` (created 0700).
+
+**Processes**: `PosixChatProcess(spec:newProcessGroup: true)` = `posix_spawn` with `POSIX_SPAWN_SETPGROUP` (child leads its own group), `POSIX_SPAWN_CLOEXEC_DEFAULT`
+(no inherited fds), reset signal dispositions/mask; terminate/kill = `killpg`; when the leader exits the rest of the group is SIGKILLed. Default (`false`, used by the app's
+local chats) is unchanged Foundation `Process`. `ChatProcess.processIdentifier` added (default 0).
+**Dead-man** (`HostService`): the app pings every 5 s, the host answers `pong`. Host side: no bytes for `deadManSeconds` (20 s, clock stops during system sleep) OR EOF/error
+=> SIGTERM to all groups, SIGKILL after `killGrace` (2 s), then `run` returns. Deliberate: an EOF kills at once (no re-attach in v1, children would be unobservable and
+uncontrollable orphans); the 20 s apply to a link that is silent but not closed. The app side declares the link dead after 20 s without any frame. `HostRunner` reconnects
+(backoff 0.5..10 s) and re-reads `token.agent` on every attempt. SIGTERM/SIGINT/SIGHUP of the host terminate all children first.
+
+**`agentbar-host`** (executable target): refuses uid 0; reads only env `AGENTBAR_IPC_DIR` (default `/Users/Shared/AgentBar`; needs `agentbar.sock` + `token.agent`).
+**App API** (`TransportServer.hostClient: HostClient`): `state/isConnected/info/onStateChange`, `processFactory` (-> `ChatSession(config: ChatConfig.remote(workspace:workspaceRoot:...),
+store:, processFactory:)`), `listWorkspaces`, `createWorkspace`, `terminateAll`, `activeProcessCount`. `ChatConfig.remoteWorkspace` / `ChatLaunchSpec.remote` carry the
+structured request; remote `launchSpec` does no local file checks and has an empty environment.
+
+## Phase 6: Personalization as built (2026-11-03)
+- **Preferences** (`AgentBarCore/Preferences`): JSON in `~/Library/Application Support/AgentBar/preferences.json` (0600, atomic temp+rename, dir 0700, version 1, corrupt file backed up to `.bak`). Holds `theme` (automatic/pastel/neon/mono), per-agent-kind defaults (name, color), per-session overrides, `bots`, `sessionBots` and `mascot`. Colors are `#RRGGBB`; names/skill/prompt are sanitized (`PreferenceText`). Color precedence: session override > bot > agent-kind default > theme palette > legacy djb2 tint. Display names come from app knowledge only, never from agent output.
+- **Bot:** id, name, colorHex, blobKindName?, agentKind, startPrompt, skill?, `defaultFolder?` (absolute local path), `defaultWorkspace?` (agentbar workspace name), createdAt. `Bot.initialMessage` = `/<skill> <startPrompt>` (skill filtered to `[A-Za-z0-9:_-]`).
+- **Mascot:** `MascotAppearance` (name, bodyKindName, colorHex, eyeStyle round/pill/sleepy/happy, accessory none/hat/glasses/bow/antenna); shown by the bar when there are no sessions.
+- **Session retention:** done sessions no longer expire by time; they stay until the user removes them (cap `maxListedSessions` = 20 drops only the oldest ended ones).
+- **UI:** "New session" is an inline flow in the notch panel (Run as, Project, Bot, Start; `PanelRouter.shared.page`); no extra windows except Settings and the macOS folder picker. Demo flags: `--demo-new-chat`, `--demo-flow-step`, `--demo-rename`, `--demo-agent-user`, `--demo-settings theme|bots|editor|mascot`, `--prefs-file`.

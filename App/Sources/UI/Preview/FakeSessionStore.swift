@@ -103,6 +103,16 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                     }
                 }
             }
+        case "empty", "emptyarrive":   // no agents: the mascot shows; "emptyarrive" gets one agent after 5 s, which is closed after 12 s
+            list = []
+            if name == "emptyarrive" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                    MainActor.assumeIsolated { self?.addSession(AgentSession(id: "a", name: "notchy-app", kind: .claudeCode, state: .working)) }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+                    MainActor.assumeIsolated { self?.remove(sessionId: "a") }
+                }
+            }
         case "chat":
             let chat = [h(200, .status, "Chat started in ~/Projects/agentbar"),
                         h(150, .answer, "You: Which targets does the project define?"),
