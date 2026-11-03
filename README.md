@@ -9,7 +9,22 @@ computer-use agents are planned (see [ROADMAP.md](ROADMAP.md)).
   a short history, and a remove button per agent.
 - **Local only:** Unix-domain socket with a random token, no network listener.
 
+<p align="center">
+  <img src="Docs/images/approval.png" width="340" alt="AgentBar asking for permission to run a command">
+  <img src="Docs/images/chat.png" width="340" alt="AgentBar chat with a running agent and Stop buttons">
+</p>
+
 Status: early MVP (Phase 1). Real Claude Code permission flows are not yet verified end to end, see the roadmap.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="Docs/images/agents.png" width="300" alt="Six agents in different states"><br><sub>All agents at a glance</sub></td>
+    <td align="center"><img src="Docs/images/question.png" width="300" alt="An agent asking a question"><br><sub>Questions from agents</sub></td>
+    <td align="center"><img src="Docs/images/history.png" width="300" alt="Session history"><br><sub>Per-session history</sub></td>
+  </tr>
+</table>
 
 ## Build
 Requires macOS 14+, Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen).
