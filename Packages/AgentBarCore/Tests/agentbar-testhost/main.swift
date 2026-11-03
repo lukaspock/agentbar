@@ -25,8 +25,16 @@ struct FakeClaude: AgentAdapter {
     let a = CommandLine.arguments
     if let i = a.firstIndex(of: "--dir"), i + 1 < a.count { dir = a[i + 1] }
     guard let dir else { FileHandle.standardError.write(Data("usage: agentbar-testhost --dir DIR\n".utf8)); exit(64) }
+    // `--agent-shared DIR`: two-user mode with fake uids. The owner is "somebody else" (euid+1), our own uid plays the agent user,
+    // the group is our primary group. Used by e2e.sh to run the real CLI against the group socket without a second macOS user.
+    var security = TransportSecurity.singleUser
+    if let i = a.firstIndex(of: "--agent-shared"), i + 1 < a.count {
+        security = TransportSecurity(ownerUid: geteuid() + 1, agentUid: geteuid(), sharedDirectory: URL(fileURLWithPath: a[i + 1], isDirectory: true),
+                                     sharedGid: getgid())
+    }
     let store = SessionStore()
-    let server = TransportServer(store: store, adapters: ["claudeCode": FakeClaude(), "computerUse": ComputerUseAdapter()], directory: URL(fileURLWithPath: dir))
+    let server = TransportServer(store: store, adapters: ["claudeCode": FakeClaude(), "computerUse": ComputerUseAdapter()],
+                                 directory: URL(fileURLWithPath: dir), security: security)
     do { try server.start() } catch { FileHandle.standardError.write(Data("start failed: \(error)\n".utf8)); exit(1) }
     let statePath = dir + "/state.txt"
     let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
@@ -62,7 +70,7 @@ struct FakeClaude: AgentAdapter {
         src.resume()
         sigSources.append(src)
     }
-    print("READY"); fflush(stdout)
+    print("READY shared=\(server.sharedStatus)"); fflush(stdout)
 }
 
 nonisolated(unsafe) var sigSources: [DispatchSourceSignal] = []

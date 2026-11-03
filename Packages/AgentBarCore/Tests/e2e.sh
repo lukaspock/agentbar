@@ -213,6 +213,33 @@ check "hung server: non-blocking hook silent exit 0" "0:" "$RC:$OUT"
 check "hung server: non-blocking hook bounded" yes "$([ $((T1-T0)) -le 7 ] && echo yes || echo no)"
 kill $HUNGPID 2>/dev/null; rm -rf "$HUNG"
 
+# --- agent user via group socket (fake uids: the testhost treats euid+1 as owner and our uid as the agent user) ---
+AD="/tmp/abe-$$-agent-owner"; AS="/tmp/abe-$$-agent-shared"; AH="/tmp/abe-$$-agent-home"
+mkdir -p "$AD" "$AH"
+"$HOST" --dir "$AD" --agent-shared "$AS" > "$AD/host.out" 2>&1 &
+AGENTHOST=$!
+for _ in $(seq 1 100); do grep -q READY "$AD/host.out" && break; sleep 0.05; done
+check "agent host shared active" "READY shared=active" "$(grep READY "$AD/host.out")"
+check "shared dir perms 750" 750 "$(perm "$AS")"
+check "shared socket perms 660" 660 "$(perm "$AS/agentbar.sock")"
+check "token.agent perms 640" 640 "$(perm "$AS/token.agent")"
+check "no owner token in shared dir" "no" "$([ -e "$AS/token" ] && echo yes || echo no)"
+# CLI as the agent user: HOME without AgentBar dir, no AGENTBAR_DIR => falls back to the shared dir + token.agent
+agentcli() { env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="$AS" "$CLI" "$@"; }
+agentcli update --session ag1 --name AgentOne --state working; check "agent CLI update via group socket" 0 $?
+for _ in $(seq 1 100); do [ "$(sed -n 's/.*sessions=\([0-9]*\).*/\1/p' "$AD/state.txt" 2>/dev/null)" == "1" ] && break; sleep 0.05; done
+check "agent session visible in owner store" 1 "$(sed -n 's/.*sessions=\([0-9]*\).*/\1/p' "$AD/state.txt")"
+OUT=$(echo '{"hook_event_name":"PreToolUse","session_id":"agh","tool_name":"Bash"}' | env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="$AS" "$CLI" hook --adapter claudeCode 2>&1); RC=$?
+check "agent hook via group socket exit 0" 0 $RC
+# explicit AGENTBAR_DIR still wins (owner dir socket refuses the agent uid -> unreachable, exit 3)
+AGENTBAR_DIR="$AD" "$CLI" update --session ag2 --state working 2>/dev/null; check "agent uid refused on owner socket" 3 $?
+# no shared dir, no owner dir -> unreachable, silent for hooks
+env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="/tmp/abe-nonexistent-$$" "$CLI" update --session ag3 --state working 2>/dev/null; check "no endpoint -> exit 3" 3 $?
+kill "$AGENTHOST" 2>/dev/null; wait "$AGENTHOST" 2>/dev/null
+check "shared socket removed on stop" "no" "$([ -e "$AS/agentbar.sock" ] && echo yes || echo no)"
+check "token.agent removed on stop" "no" "$([ -e "$AS/token.agent" ] && echo yes || echo no)"
+rm -rf "$AD" "$AS" "$AH"
+
 # graceful stop removes socket + token; hook afterwards is silent
 kill "$HOSTPID"; wait "$HOSTPID" 2>/dev/null; HOSTPID=""
 check "socket removed on stop" "no" "$([ -e "$D/agentbar.sock" ] && echo yes || echo no)"

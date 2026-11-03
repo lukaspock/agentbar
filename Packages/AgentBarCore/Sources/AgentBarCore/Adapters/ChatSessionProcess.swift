@@ -7,6 +7,21 @@ public struct ChatLaunchSpec: Sendable, Equatable {
     public var arguments: [String]
     public var workingDirectory: URL
     public var environment: [String: String]
+    /// Set (only) for the agent-user host: structured request instead of local paths. `executable`, `workingDirectory` and
+    /// `environment` are then placeholders that nobody may use; the host builds its own from this.
+    public var remote: RemoteLaunch? = nil
+}
+
+/// What the host needs to start `claude` for a chat: no executable, no environment, no absolute path.
+public struct RemoteLaunch: Sendable, Equatable {
+    public var workspace: String
+    public var model: String?
+    public var maxBudgetUSD: Double?
+    public var tools: [String]?
+    public var permissionMode: String?
+    public init(workspace: String, model: String? = nil, maxBudgetUSD: Double? = nil, tools: [String]? = nil, permissionMode: String? = nil) {
+        self.workspace = workspace; self.model = model; self.maxBudgetUSD = maxBudgetUSD; self.tools = tools; self.permissionMode = permissionMode
+    }
 }
 
 /// Abstraction of the child process so the session logic can be tested with a fake. Callbacks may arrive on any thread.
@@ -22,13 +37,25 @@ public protocol ChatProcess: AnyObject, Sendable {
     func terminate()
     /// SIGKILL, returns immediately.
     func kill()
+    /// OS process id once started (0 = unknown / not local).
+    var processIdentifier: Int32 { get }
+}
+
+public extension ChatProcess {
+    var processIdentifier: Int32 { 0 }
 }
 
 public typealias ChatProcessFactory = @Sendable (ChatLaunchSpec) throws -> ChatProcess
 
-/// Foundation `Process` implementation. Does not start a shell; arguments are passed as argv.
-/// Limitation: tool subprocesses started by claude are in the same process group as claude; they normally die with it,
-/// a SIGKILL of claude alone can leave them running.
+/// Process implementation. Does not start a shell; arguments are passed as argv.
+///
+/// Default (`newProcessGroup: false`): Foundation `Process`. Tool subprocesses started by claude share the app's process
+/// group; a SIGKILL of claude alone can leave them running.
+///
+/// `newProcessGroup: true` (used by the agent-user host): `posix_spawn` with the child as leader of a NEW process group
+/// and all other file descriptors closed in the child (`POSIX_SPAWN_CLOEXEC_DEFAULT`), signal dispositions reset.
+/// `terminate()`/`kill()` then signal the whole group (`killpg`), and when the leader exits the rest of the group is killed
+/// so tool subprocesses cannot outlive their session.
 public final class PosixChatProcess: ChatProcess, @unchecked Sendable {
     public static let factory: ChatProcessFactory = { PosixChatProcess(spec: $0) }
 
@@ -45,8 +72,16 @@ public final class PosixChatProcess: ChatProcess, @unchecked Sendable {
     private var onLine: (@Sendable (Data) -> Void)?
     private var onExit: (@Sendable (Int32) -> Void)?
     private var started = false
+    private let grouped: Bool
+    private var groupPid: pid_t = 0
+    private var reaped = false
 
-    public init(spec: ChatLaunchSpec) { self.spec = spec }
+    public init(spec: ChatLaunchSpec, newProcessGroup: Bool = false) { self.spec = spec; self.grouped = newProcessGroup }
+
+    public var processIdentifier: Int32 {
+        lock.lock(); defer { lock.unlock() }
+        return grouped ? groupPid : process.processIdentifier
+    }
 
     public func start(onLine: @escaping @Sendable (Data) -> Void,
                       onStderr: @escaping @Sendable (Data) -> Void,
@@ -56,6 +91,7 @@ public final class PosixChatProcess: ChatProcess, @unchecked Sendable {
         started = true
         self.onLine = onLine
         self.onExit = onExit
+        if grouped { try startGrouped(onStderr: onStderr); return }
         process.executableURL = spec.executable
         process.arguments = spec.arguments
         process.currentDirectoryURL = spec.workingDirectory
@@ -90,14 +126,85 @@ public final class PosixChatProcess: ChatProcess, @unchecked Sendable {
     }
 
     public func terminate() {
-        if process.isRunning { process.terminate() }
+        if grouped { signalGroup(SIGTERM) } else if process.isRunning { process.terminate() }
         let h = stdinPipe.fileHandleForWriting
         writeQueue.async { try? h.close() }
     }
 
     public func kill() {
+        if grouped { signalGroup(SIGKILL); return }
         let pid = process.processIdentifier
         if process.isRunning, pid > 0 { _ = Darwin.kill(pid, SIGKILL) }
+    }
+
+    // MARK: new process group (posix_spawn)
+
+    private func signalGroup(_ sig: Int32) {
+        lock.lock(); defer { lock.unlock() }
+        if groupPid > 0, !reaped { _ = killpg(groupPid, sig) }
+    }
+
+    /// Called with `lock` held (from `start`).
+    private func startGrouped(onStderr: @escaping @Sendable (Data) -> Void) throws {
+        func fail(_ what: String, _ e: Int32) -> ChatError { .spawnFailed("\(what): \(String(cString: strerror(e)))") }
+        var fa: posix_spawn_file_actions_t?
+        var attr: posix_spawnattr_t?
+        guard posix_spawn_file_actions_init(&fa) == 0 else { throw fail("spawn actions", errno) }
+        defer { posix_spawn_file_actions_destroy(&fa) }
+        guard posix_spawnattr_init(&attr) == 0 else { throw fail("spawn attributes", errno) }
+        defer { posix_spawnattr_destroy(&attr) }
+
+        let inR = stdinPipe.fileHandleForReading.fileDescriptor
+        let outW = stdoutPipe.fileHandleForWriting.fileDescriptor
+        let errW = stderrPipe.fileHandleForWriting.fileDescriptor
+        posix_spawn_file_actions_adddup2(&fa, inR, 0)
+        posix_spawn_file_actions_adddup2(&fa, outW, 1)
+        posix_spawn_file_actions_adddup2(&fa, errW, 2)
+        let rc = posix_spawn_file_actions_addchdir_np(&fa, spec.workingDirectory.path)
+        guard rc == 0 else { throw fail("working directory", rc) }
+
+        var all = sigset_t(), none = sigset_t()
+        sigfillset(&all); sigemptyset(&none)
+        posix_spawnattr_setsigdefault(&attr, &all)
+        posix_spawnattr_setsigmask(&attr, &none)
+        posix_spawnattr_setpgroup(&attr, 0)
+        let flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT
+        posix_spawnattr_setflags(&attr, Int16(flags))
+
+        let argv = ([spec.executable.path] + spec.arguments).map { strdup($0) } + [nil]
+        let envp = spec.environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { for p in argv { free(p) }; for p in envp { free(p) } }
+
+        var pid: pid_t = 0
+        let err = posix_spawn(&pid, spec.executable.path, &fa, &attr, argv, envp)
+        // The child's ends are no longer needed here (also on failure).
+        try? stdinPipe.fileHandleForReading.close()
+        try? stdoutPipe.fileHandleForWriting.close()
+        try? stderrPipe.fileHandleForWriting.close()
+        guard err == 0 else {
+            self.onLine = nil; self.onExit = nil
+            throw fail("cannot start \(spec.executable.lastPathComponent)", err)
+        }
+        groupPid = pid
+        let leader = pid
+        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let d = h.availableData
+            if d.isEmpty { h.readabilityHandler = nil; self?.stdoutDone() } else { self?.feed(d) }
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData
+            if d.isEmpty { h.readabilityHandler = nil } else { onStderr(d) }
+        }
+        let t = Thread { [weak self] in
+            var status: Int32 = 0
+            while waitpid(leader, &status, 0) < 0 && errno == EINTR {}
+            _ = killpg(leader, SIGKILL)   // leader gone: nothing else of this session may keep running
+            let code: Int32 = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
+            self?.lock.lock(); self?.reaped = true; self?.lock.unlock()
+            self?.processEnded(code)
+        }
+        t.name = "agentbar.chat.wait"
+        t.start()
     }
 
     // MARK: reading

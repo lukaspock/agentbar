@@ -53,13 +53,34 @@ func parseArgs(_ argv: [String]) -> Args? {
 
 // MARK: Connection
 
+/// Group-shared directory of the AgentBar socket (used by the agent user, whose own home has no AgentBar directory).
+let sharedDirDefault = "/Users/Shared/AgentBar"
+
+func fileExists(_ path: String) -> Bool { var st = stat(); return lstat(path, &st) == 0 }
+
+/// Where to connect. Order: `AGENTBAR_DIR` (explicit, as before); else the owner's own directory if its socket exists
+/// (unchanged for the owner); else the shared group directory (`AGENTBAR_SHARED_DIR` or /Users/Shared/AgentBar) if
+/// its socket exists and a token file is readable; else the owner path (-> "app not reachable").
 func defaultDir() -> String {
-    if let d = ProcessInfo.processInfo.environment["AGENTBAR_DIR"], !d.isEmpty { return d }
-    return NSHomeDirectory() + "/Library/Application Support/AgentBar"
+    let env = ProcessInfo.processInfo.environment
+    if let d = env["AGENTBAR_DIR"], !d.isEmpty { return d }
+    // $HOME first (NSHomeDirectory ignores it); lets tests and wrappers point the lookup elsewhere.
+    let home = (env["HOME"].flatMap { $0.isEmpty ? nil : $0 }) ?? NSHomeDirectory()
+    let own = home + "/Library/Application Support/AgentBar"
+    if fileExists(own + "/agentbar.sock") { return own }
+    let shared = (env["AGENTBAR_SHARED_DIR"].flatMap { $0.isEmpty ? nil : $0 }) ?? sharedDirDefault
+    if fileExists(shared + "/agentbar.sock"), tokenFile(shared) != nil { return shared }
+    return own
+}
+
+/// `token` (owner role) first, then `token.agent` (agent role, group-readable). Only files we can actually read count.
+func tokenFile(_ dir: String) -> String? {
+    for name in ["token", "token.agent"] where access(dir + "/" + name, R_OK) == 0 { return dir + "/" + name }
+    return nil
 }
 
 func readToken(_ dir: String) -> String? {
-    guard let d = FileManager.default.contents(atPath: dir + "/token"),
+    guard let f = tokenFile(dir), let d = FileManager.default.contents(atPath: f),
           let s = String(data: d, encoding: .utf8) else { return nil }
     let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
     return t.isEmpty ? nil : t

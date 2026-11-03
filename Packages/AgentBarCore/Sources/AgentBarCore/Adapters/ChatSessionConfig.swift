@@ -37,6 +37,10 @@ public struct ChatConfig: Sendable {
     public var idleCheckInterval: TimeInterval
     /// SIGTERM -> SIGKILL grace on stop.
     public var killGrace: TimeInterval
+    /// Non-nil = the process runs under the agent user via the host (`RemoteChatProcess`): the workspace NAME below the agent's
+    /// work root. `executable`/`workingDirectory` are then display-only placeholders, no local file checks happen, and the
+    /// child environment is empty (the host builds its own). Use `ChatConfig.remote(...)`.
+    public var remoteWorkspace: String?
 
     public static let defaultPassthrough = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR",
                                             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
@@ -47,12 +51,26 @@ public struct ChatConfig: Sendable {
                 model: String? = nil, maxBudgetUSD: Double? = nil, tools: [String]? = nil,
                 permissionMode: PermissionMode? = nil, passthroughEnvironment: [String] = ChatConfig.defaultPassthrough,
                 extraEnvironment: [String: String] = [:], idleTimeout: TimeInterval? = 1800,
-                idleCheckInterval: TimeInterval = 5, killGrace: TimeInterval = 2) {
+                idleCheckInterval: TimeInterval = 5, killGrace: TimeInterval = 2, remoteWorkspace: String? = nil) {
         self.executable = executable; self.workingDirectory = workingDirectory; self.sessionId = sessionId
         self.name = name; self.model = model; self.maxBudgetUSD = maxBudgetUSD; self.tools = tools
         self.permissionMode = permissionMode; self.passthroughEnvironment = passthroughEnvironment
         self.extraEnvironment = extraEnvironment; self.idleTimeout = idleTimeout
-        self.idleCheckInterval = idleCheckInterval; self.killGrace = killGrace
+        self.idleCheckInterval = idleCheckInterval; self.killGrace = killGrace; self.remoteWorkspace = remoteWorkspace
+    }
+
+    /// Config for a chat that runs under the agent user. `workspaceRoot` (from `HostClient.Info`) only makes the displayed
+    /// cwd of approval cards truthful; it is never used to touch the file system.
+    public static func remote(workspace: String, workspaceRoot: String? = nil, sessionId: String? = nil, name: String? = nil,
+                              model: String? = nil, maxBudgetUSD: Double? = nil, tools: [String]? = nil,
+                              permissionMode: PermissionMode? = nil, idleTimeout: TimeInterval? = 1800,
+                              idleCheckInterval: TimeInterval = 5, killGrace: TimeInterval = 2) -> ChatConfig {
+        let shown = (workspaceRoot ?? "/agent-workspaces") + "/" + workspace
+        return ChatConfig(executable: URL(fileURLWithPath: "/agent-host/claude"), workingDirectory: URL(fileURLWithPath: shown, isDirectory: true),
+                          sessionId: sessionId, name: name ?? workspace, model: model, maxBudgetUSD: maxBudgetUSD, tools: tools,
+                          permissionMode: permissionMode, passthroughEnvironment: [], extraEnvironment: [:],
+                          idleTimeout: idleTimeout, idleCheckInterval: idleCheckInterval, killGrace: killGrace,
+                          remoteWorkspace: workspace)
     }
 
     /// Typical install locations of the CLI (first existing executable wins); nil if none.
@@ -63,14 +81,18 @@ public struct ChatConfig: Sendable {
 
     /// Validates and builds the launch spec. `environment` is the source for `passthroughEnvironment`.
     public func launchSpec(environment source: [String: String] = ProcessInfo.processInfo.environment) throws -> ChatLaunchSpec {
-        guard executable.isFileURL, executable.path.hasPrefix("/") else { throw ChatError.invalidConfig("executable must be an absolute path") }
-        guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw ChatError.invalidConfig("executable not found or not executable") }
         let dir = workingDirectory.standardizedFileURL
-        var isDir: ObjCBool = false
-        guard dir.isFileURL, FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
-            throw ChatError.invalidConfig("working directory does not exist")
+        if let ws = remoteWorkspace {
+            guard HostProtocol.isValidWorkspaceName(ws) else { throw ChatError.invalidConfig("invalid workspace name") }
+        } else {
+            guard executable.isFileURL, executable.path.hasPrefix("/") else { throw ChatError.invalidConfig("executable must be an absolute path") }
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw ChatError.invalidConfig("executable not found or not executable") }
+            var isDir: ObjCBool = false
+            guard dir.isFileURL, FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
+                throw ChatError.invalidConfig("working directory does not exist")
+            }
+            guard dir.path != "/" else { throw ChatError.invalidConfig("working directory must not be /") }
         }
-        guard dir.path != "/" else { throw ChatError.invalidConfig("working directory must not be /") }
         var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
         if let model {
             guard Self.safeToken(model, extra: "[]") else { throw ChatError.invalidConfig("invalid model") }
@@ -87,6 +109,11 @@ public struct ChatConfig: Sendable {
             args += ["--tools", tools.joined(separator: ",")]
         }
         if let permissionMode { args += ["--permission-mode", permissionMode.rawValue] }
+        if let ws = remoteWorkspace {
+            // Remote: structured request only. The environment of the child is built by the host, never by the app.
+            let remote = RemoteLaunch(workspace: ws, model: model, maxBudgetUSD: maxBudgetUSD, tools: tools, permissionMode: permissionMode?.rawValue)
+            return ChatLaunchSpec(executable: executable, arguments: args, workingDirectory: dir, environment: [:], remote: remote)
+        }
         var env: [String: String] = [:]
         for k in passthroughEnvironment { if let v = source[k] { env[k] = v } }
         for (k, v) in extraEnvironment {

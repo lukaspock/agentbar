@@ -9,11 +9,14 @@ let package = Package(
     products: [
         .library(name: "AgentBarCore", targets: ["AgentBarCore"]),
         .executable(name: "agentbar", targets: ["agentbar"]),
+        .executable(name: "agentbar-host", targets: ["agentbar-host"]),
     ],
     targets: [
         .target(name: "AgentBarCore", swiftSettings: strict),
         // CLI: standalone (Foundation only), no dependency on the core library.
         .executableTarget(name: "agentbar", swiftSettings: strict),
+        // Agent-user host: runs as the agent user, spawns claude for the app. Dumb pipe; see CONTRACTS.md "Phase 5".
+        .executableTarget(name: "agentbar-host", dependencies: ["AgentBarCore"], swiftSettings: strict),
         // Test host used by Tests/e2e.sh: runs store + server in a temp dir without GUI.
         .executableTarget(name: "agentbar-testhost", dependencies: ["AgentBarCore"],
                           path: "Tests/agentbar-testhost", swiftSettings: strict),

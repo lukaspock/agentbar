@@ -38,6 +38,8 @@ public final class ChatSession {
     private var stopRequested = false
     private var idleKilled = false
     private var turnActive = false
+    /// The claude CLI's own session id (from `system/init`), reserved like `sessionId` while the process lives.
+    private var cliAliasId: String?
     private var lastActivity = Date()
     private var stderrTail = Data()
     private var malformed = 0
@@ -126,7 +128,13 @@ public final class ChatSession {
             return
         }
         switch msg {
-        case let .systemInit(_, model):
+        case let .systemInit(cliSessionId, model):
+            // Hooks of this very claude process report ITS session id, not our `chat-...` id. Reserve it too, otherwise a hook
+            // (e.g. from the agent user's ~/.claude/settings.json) would raise a second approval next to the chat's own one.
+            if let a = cliSessionId, !a.isEmpty, a.count <= AgentBarLimits.maxIdLength, a != sessionId, cliAliasId == nil,
+               !store.isChatOwned(a) {
+                store.markChatOwned(a); cliAliasId = a
+            }
             if let m = ClaudeCodeAdapter.clean(model, max: 60) {
                 store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .status, text: "model \(m)")))
             }
@@ -336,7 +344,7 @@ public final class ChatSession {
     func handleExit(status: Int32) {
         guard phase != .exited else { return }
         phase = .exited
-        defer { store.unmarkChatOwned(sessionId) }   // release the reservation after the final events below
+        defer { store.unmarkChatOwned(sessionId); releaseAlias() }   // release the reservation after the final events below
         watchdog?.cancel(); watchdog = nil
         process = nil
         let all = pending
@@ -389,6 +397,8 @@ public final class ChatSession {
             }
         }
     }
+
+    private func releaseAlias() { if let a = cliAliasId { store.unmarkChatOwned(a); cliAliasId = nil } }
 
     private func fail(_ error: Error) -> ChatError {
         let msg = ClaudeCodeAdapter.clean((error as NSError).localizedDescription, max: 200) ?? "spawn failed"

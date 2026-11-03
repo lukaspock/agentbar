@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchDaemon template for the AgentBar host (runs as the agent user).
+  Rendered by Scripts/setup-agent-user.sh; every placeholder below is substituted:
+    @HOST_BINARY@  absolute path of the root-owned agentbar-host binary
+    @AGENT_USER@   agent user name (default: agentbar)
+    @AGENT_GROUP@  IPC group (default: agentbar-ipc)
+    @AGENT_HOME@   home directory of the agent user
+    @IPC_DIR@      shared socket directory (default: /Users/Shared/AgentBar)
+  launchd sets no login environment, so HOME/USER/LOGNAME/PATH are explicit.
+  No secrets belong in this file (it is world-readable); the token lives in a
+  0600 file in the agent user's home.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentbar.host</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@HOST_BINARY@</string>
+    </array>
+
+    <key>UserName</key>
+    <string>@AGENT_USER@</string>
+
+    <key>WorkingDirectory</key>
+    <string>@AGENT_HOME@</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>@AGENT_HOME@</string>
+        <key>USER</key>
+        <string>@AGENT_USER@</string>
+        <key>LOGNAME</key>
+        <string>@AGENT_USER@</string>
+        <key>PATH</key>
+        <string>@AGENT_HOME@/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>AGENTBAR_IPC_DIR</key>
+        <string>@IPC_DIR@</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>@AGENT_HOME@/host.log</string>
+    <key>StandardErrorPath</key>
+    <string>@AGENT_HOME@/host.log</string>
+</dict>
+</plist>
