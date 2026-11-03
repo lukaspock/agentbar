@@ -107,6 +107,7 @@ extension PreferencesError {
         case .notFound: return "This bot no longer exists."
         case .limitReached: return "The limit of \(PreferencesStore.maxBots) bots is reached. Delete a bot first."
         case .invalidFolder: return "The default folder must be an absolute path (for example /Users/you/project) without \"..\"."
+        case .invalidSkill: return "Skill: only letters, digits, : _ - (no spaces or slash), max \(PreferenceText.maxSkillCommandLength) characters."
         case .invalidWorkspace: return "Workspace names may use letters, digits, dot, dash and underscore (max 64, no leading dot)."
         }
     }

@@ -222,9 +222,32 @@ uncontrollable orphans); the 20 s apply to a link that is silent but not closed.
 store:, processFactory:)`), `listWorkspaces`, `createWorkspace`, `terminateAll`, `activeProcessCount`. `ChatConfig.remoteWorkspace` / `ChatLaunchSpec.remote` carry the
 structured request; remote `launchSpec` does no local file checks and has an empty environment.
 
+## Phase 7: security hardening of phases 4/5 (2026-11-03) - additive
+- **CLI shared-dir fallback** (`Sources/agentbar/SharedEndpointTrust.swift`): the group directory is used only if `lstat` shows: directory (no symlink), group
+  `agentbar-ipc`, no group/world write; expected server uid = directory owner (root-owned dir: the socket's owner), and it must NOT be the calling uid
+  (the hook runs as the agent user; a dir it owns proves nothing); socket is a real socket with that owner/group and not world-writable (0660 ok);
+  `token.agent` is a regular file owned by that uid or root, no group/world write, no world access. Only `token.agent` is read there (never `token`).
+  After connect the server uid is verified with `getpeereid` == expected uid, else the connection is dropped (exit 3). `AGENTBAR_DIR` (explicit) and the
+  owner's own directory are unchanged. Test-only switch `AGENTBAR_TRUST_TEST=1` (e2e with fake uids): self-owned dir and primary group allowed.
+- **Alias reservation** (`ChatSession`): the claude session id from `system/init` (agent output) is reserved only if it matches `[A-Za-z0-9_:.-]{1,maxIdLength}`
+  and the store does not already know a session with that id (and it is not already chat-owned). A forged init line therefore cannot lock out a foreign hook session.
+- **Host binary check** (`TransportSecurity.hostBinary`, `HostBinaryPolicy`): `op: host` additionally requires that the peer process (pid via `LOCAL_PEERPID`,
+  path via `proc_pidpath`, realpath-compared) is `/usr/local/libexec/agentbar/agentbar-host`, and that this file and its directory are root-owned and not
+  group/world writable. Otherwise `forbidden`. Secure by default (`TransportSecurity.init` default `.standard`); tests inject `.disabled` or fake pid/path.
+  No wire change: an already installed host binary at that path keeps working with a new app (and vice versa).
+- **Dead host replacement** (`HostClient.serve`): a second authenticated, path-checked host pings the registered one; if no frame arrives within 2 s
+  (`takeoverProbe`) or the link is already gone, the old link is shut down and the newcomer takes over (its processes get the usual `disconnected`). A
+  host that answers is never displaced (`host already connected`).
+- **Residual risk (documented, not solved):** host and agent run under the SAME macOS uid. Any process of the agent user can read `token.agent`, kill or
+  restart the real `agentbar-host` (then connect in the gap), start the real binary with an injected library (`DYLD_INSERT_LIBRARIES`) or attach a debugger.
+  The path check stops casual impersonation (scripts, copied binaries) only. Impact: such a process receives the lines the app sends to the "host"
+  (user prompts, approvals results) and can feed forged stdout to the app's `ChatSession` (which still renders approvals app-side). A separate token does not
+  help (same uid can read it). Future option: run the host under its own user (`agentbar-host`, distinct from the agent user that runs `claude`) with
+  a socket only that user can reach, and authenticate it by uid in the role table.
+
 ## Phase 6: Personalization as built (2026-11-03)
-- **Preferences** (`AgentBarCore/Preferences`): JSON in `~/Library/Application Support/AgentBar/preferences.json` (0600, atomic temp+rename, dir 0700, version 1, corrupt file backed up to `.bak`). Holds `theme` (automatic/pastel/neon/mono), per-agent-kind defaults (name, color), per-session overrides, `bots`, `sessionBots` and `mascot`. Colors are `#RRGGBB`; names/skill/prompt are sanitized (`PreferenceText`). Color precedence: session override > bot > agent-kind default > theme palette > legacy djb2 tint. Display names come from app knowledge only, never from agent output.
-- **Bot:** id, name, colorHex, blobKindName?, agentKind, startPrompt, skill?, `defaultFolder?` (absolute local path), `defaultWorkspace?` (agentbar workspace name), createdAt. `Bot.initialMessage` = `/<skill> <startPrompt>` (skill filtered to `[A-Za-z0-9:_-]`).
+- **Preferences** (`AgentBarCore/Preferences`): JSON in `~/Library/Application Support/AgentBar/preferences.json` (0600, atomic temp+rename, dir 0700, version 1, corrupt file backed up to `.bak`). Holds `theme` (automatic/pastel/neon/mono), per-agent-kind defaults (name, color), per-session overrides, `bots`, `sessionBots` and `mascot`. Colors are `#RRGGBB`; names/prompt are sanitized (`PreferenceText`); a skill must be entirely `[A-Za-z0-9:_-]` (max 64, blank = none): `createBot`/`updateBot` throw `PreferencesError.invalidSkill` instead of cleaning, and an invalid skill in a hand-edited file is dropped (the bot is kept). Color precedence: session override > bot > agent-kind default > theme palette > legacy djb2 tint. Display names come from app knowledge only, never from agent output.
+- **Bot:** id, name, colorHex, blobKindName?, agentKind, startPrompt, skill?, `defaultFolder?` (absolute local path), `defaultWorkspace?` (agentbar workspace name), createdAt. `Bot.initialMessage` = `/<skill> <startPrompt>` (skill already validated; `initialMessage` still filters defensively).
 - **Mascot:** `MascotAppearance` (name, bodyKindName, colorHex, eyeStyle round/pill/sleepy/happy, accessory none/hat/glasses/bow/antenna); shown by the bar when there are no sessions.
 - **Session retention:** done sessions no longer expire by time; they stay until the user removes them (cap `maxListedSessions` = 20 drops only the oldest ended ones).
-- **UI:** "New session" is an inline flow in the notch panel (Run as, Project, Bot, Start; `PanelRouter.shared.page`); no extra windows except Settings and the macOS folder picker. Demo flags: `--demo-new-chat`, `--demo-flow-step`, `--demo-rename`, `--demo-agent-user`, `--demo-settings theme|bots|editor|mascot`, `--prefs-file`.
+- **UI:** "New session" is an inline flow in the notch panel (Run as, Bot, Project, Start; `PanelRouter.shared.page`; only Claude Code bots are offered, and the bot's `defaultFolder`/`defaultWorkspace` preselects the Project step, marked "(from bot)"); no extra windows except Settings and the macOS folder picker. Demo flags: `--demo-new-chat`, `--demo-flow-step bot|project|start`, `--demo-flow-bot`, `--demo-bot-skill`, `--demo-rename`, `--demo-agent-user`, `--demo-settings theme|bots|editor|mascot`, `--prefs-file`.

@@ -24,7 +24,7 @@ public final class HostClient: @unchecked Sendable {
     }
     public enum State: Sendable, Equatable { case disconnected; case connected(Info) }
 
-    private struct Link { var writer: HostFrameWriter; var fd: Int32 }
+    private struct Link { var writer: HostFrameWriter; var fd: Int32; var reader: HostLineReader }
     private struct Pending { var finish: @Sendable (Result<HostEvent, HostError>) -> Void }
 
     private let lock = NSLock()
@@ -36,10 +36,14 @@ public final class HostClient: @unchecked Sendable {
     private var _dropped = 0
     private let pingInterval: TimeInterval
     private let deadAfter: TimeInterval
+    private let takeoverProbe: TimeInterval
     public static let requestTimeout: TimeInterval = 10
 
-    public init(pingInterval: TimeInterval = HostProtocol.pingInterval, deadAfter: TimeInterval = HostProtocol.deadManSeconds) {
-        self.pingInterval = pingInterval; self.deadAfter = deadAfter
+    /// `takeoverProbe`: when a second (authenticated, binary-checked) host connects while one is registered, the registered one is
+    /// pinged and must answer within this time to keep its place; otherwise it is dropped and the newcomer takes over.
+    public init(pingInterval: TimeInterval = HostProtocol.pingInterval, deadAfter: TimeInterval = HostProtocol.deadManSeconds,
+                takeoverProbe: TimeInterval = 2) {
+        self.pingInterval = pingInterval; self.deadAfter = deadAfter; self.takeoverProbe = takeoverProbe
     }
 
     // MARK: observable state
@@ -140,8 +144,15 @@ public final class HostClient: @unchecked Sendable {
         let reader = HostLineReader(fd: fd)
         let writer = HostFrameWriter(fd: fd, onFailure: { Darwin.shutdown(fd, SHUT_RDWR) })
         lock.lock()
+        if let old = link {
+            lock.unlock()
+            // A living host is never displaced (first-connect-wins against a racing impostor), a dead one (EOF already torn down,
+            // or silent: no answer to a ping) is replaced at once instead of after the 20 s dead-man window.
+            guard displaceIfDead(old) else { return false }
+            lock.lock()
+        }
         if link != nil { lock.unlock(); return false }
-        link = Link(writer: writer, fd: fd)
+        link = Link(writer: writer, fd: fd, reader: reader)
         _state = .connected(info)
         let cb = handler
         lock.unlock()
@@ -172,6 +183,26 @@ public final class HostClient: @unchecked Sendable {
         teardown()
         return true
     }
+
+    /// true = the registered link is gone now (it was dead and has been torn down); false = it is alive.
+    private func displaceIfDead(_ old: Link) -> Bool {
+        let mark = hostMonotonicNow()
+        if let d = try? HostProtocol.encode(.ping) { old.writer.send(d) }
+        let end = Date().addingTimeInterval(takeoverProbe)
+        while Date() < end {
+            if !isLink(old) { return true }
+            if old.reader.lastReceive > mark { return false }      // any frame since the probe = alive
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if !isLink(old) { return true }
+        if old.reader.lastReceive > mark { return false }
+        Darwin.shutdown(old.fd, SHUT_RDWR)                          // wakes the old serve loop, which tears itself down
+        let tearEnd = Date().addingTimeInterval(3)
+        while Date() < tearEnd { if !isLink(old) { return true }; Thread.sleep(forTimeInterval: 0.01) }
+        return false
+    }
+
+    private func isLink(_ l: Link) -> Bool { lock.lock(); defer { lock.unlock() }; return link?.fd == l.fd && link?.reader === l.reader }
 
     private func dropped() { lock.lock(); _dropped += 1; lock.unlock() }
     private func process(_ id: String) -> RemoteChatProcess? {

@@ -47,16 +47,19 @@ public struct TransportSecurity: Sendable {
     public var sharedSocketMode: mode_t
     public var agentQuota: RoleQuota
     public var peerCredentials: PeerCredentials
+    /// Which executable may speak `op: host`. Secure by default; tests inject `.disabled` or fake pid/path lookups.
+    public var hostBinary: HostBinaryPolicy
 
     public init(ownerUid: uid_t = geteuid(), agentUid: uid_t? = nil,
                 sharedDirectory: URL? = nil, sharedGroupName: String? = nil, sharedGid: gid_t? = nil,
                 sharedDirMode: mode_t = 0o750, sharedSocketMode: mode_t = 0o660,
                 agentQuota: RoleQuota = .agentDefault,
-                peerCredentials: @escaping PeerCredentials = TransportSecurity.systemPeerCredentials) {
+                peerCredentials: @escaping PeerCredentials = TransportSecurity.systemPeerCredentials,
+                hostBinary: HostBinaryPolicy = .standard) {
         self.ownerUid = ownerUid; self.agentUid = agentUid
         self.sharedDirectory = sharedDirectory; self.sharedGroupName = sharedGroupName; self.sharedGid = sharedGid
         self.sharedDirMode = sharedDirMode; self.sharedSocketMode = sharedSocketMode
-        self.agentQuota = agentQuota; self.peerCredentials = peerCredentials
+        self.agentQuota = agentQuota; self.peerCredentials = peerCredentials; self.hostBinary = hostBinary
     }
 
     /// Single-user mode (the default of `TransportServer`).
@@ -137,5 +140,65 @@ final class SessionOrigins: @unchecked Sendable {
 
     private func prune(live: Set<String>, now: Date) {
         entries = entries.filter { live.contains($0.key) || now.timeIntervalSince($0.value.at) <= Self.staleAfter }
+    }
+}
+
+/// Restricts `op: host` to the installed, root-owned `agentbar-host` binary. The peer's pid comes from the kernel
+/// (LOCAL_PEERPID), its executable path from `proc_pidpath`. A shell/Python script or a copied binary has another path and is
+/// refused, so a stray process of the agent user that merely read `token.agent` cannot register as the host.
+/// Limits (documented in CONTRACTS.md): same uid as the agent, so a process that starts the REAL binary with an injected library
+/// or debugs it still passes. This raises the bar; the real boundary would be a separate host user.
+public struct HostBinaryPolicy: Sendable {
+    public static let defaultPath = "/usr/local/libexec/agentbar/agentbar-host"
+    public typealias PeerPid = @Sendable (Int32) -> pid_t?
+    public typealias PathOfPid = @Sendable (pid_t) -> String?
+
+    /// nil = no check (tests only).
+    public var allowedPaths: [String]?
+    /// The binary and its directory must be owned by root and not group/world writable.
+    public var requireRootOwned: Bool
+    public var peerPid: PeerPid
+    public var pathOfPid: PathOfPid
+
+    public init(allowedPaths: [String]?, requireRootOwned: Bool = true,
+                peerPid: @escaping PeerPid = HostBinaryPolicy.systemPeerPid, pathOfPid: @escaping PathOfPid = HostBinaryPolicy.systemPathOfPid) {
+        self.allowedPaths = allowedPaths; self.requireRootOwned = requireRootOwned; self.peerPid = peerPid; self.pathOfPid = pathOfPid
+    }
+
+    public static var standard: HostBinaryPolicy { HostBinaryPolicy(allowedPaths: [defaultPath]) }
+    public static var disabled: HostBinaryPolicy { HostBinaryPolicy(allowedPaths: nil, requireRootOwned: false) }
+
+    public static let systemPeerPid: PeerPid = { fd in
+        var pid: pid_t = 0; var len = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, 0 /* SOL_LOCAL */, 0x002 /* LOCAL_PEERPID */, &pid, &len) == 0, pid > 0 else { return nil }
+        return pid
+    }
+    public static let systemPathOfPid: PathOfPid = { pid in
+        var buf = [CChar](repeating: 0, count: 4 * 1024)
+        let n = proc_pidpath(pid, &buf, UInt32(buf.count))
+        return n > 0 ? String(cString: buf) : nil
+    }
+
+    /// true = the peer on `fd` is the allowed host binary.
+    public func allows(fd: Int32) -> Bool {
+        guard let allowed = allowedPaths else { return true }
+        guard let pid = peerPid(fd), let path = pathOfPid(pid), let real = Self.realpath(path) else { return false }
+        guard allowed.contains(where: { Self.realpath($0) == real }) else { return false }
+        if requireRootOwned {
+            guard Self.rootOwnedNotWritable(real), Self.rootOwnedNotWritable((real as NSString).deletingLastPathComponent) else { return false }
+        }
+        return true
+    }
+
+    static func realpath(_ p: String) -> String? {
+        guard let r = Darwin.realpath(p, nil) else { return nil }
+        defer { free(r) }
+        return String(cString: r)
+    }
+
+    static func rootOwnedNotWritable(_ p: String) -> Bool {
+        var st = stat()
+        guard lstat(p, &st) == 0 else { return false }
+        return st.st_uid == 0 && st.st_mode & 0o022 == 0
     }
 }

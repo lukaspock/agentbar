@@ -425,6 +425,8 @@ public final class TransportServer: @unchecked Sendable {
         if op == "host" {
             // Long-lived duplex channel to the agent-user host. Only the agent role may open it (the owner never needs to).
             guard role == .agent else { return Self.error("forbidden") }
+            // Only the installed root-owned agentbar-host binary may register (scripts / copied binaries are refused).
+            guard security.hostBinary.allows(fd: fd) else { return Self.error("forbidden") }
             return hostClient.acceptHost(req, fd: fd, peerUid: security.peerCredentials(fd)?.uid)
         }
 

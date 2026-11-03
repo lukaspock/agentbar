@@ -13,14 +13,15 @@ struct LaunchOptions {
     var demoAgentChat = false     // --demo-agent-chat: demo chat session counts as started via the agent target
     var demoNewChatAgent = false
     var demoNewChat = false       // --demo-new-chat: open the inline New session flow right after launch (screenshots)
-    var demoFlowStep: String?     // --demo-flow-step project|bot|start: jump to that step (needs --demo-new-chat)
+    var demoFlowStep: String?     // --demo-flow-step bot|project|start: jump to that step (needs --demo-new-chat)
     var demoFlowFolder: String?   // --demo-flow-folder <path>: preset local folder (the system folder dialog cannot be scripted)
     var demoFlowNewName: String?  // --demo-flow-newname <text>: preset the "New workspace" name (validation screenshots)
-    var demoFlowBot: String?      // --demo-flow-bot <bot name>: preselect a bot (applies its default folder)
+    var demoFlowBot: String?      // --demo-flow-bot <bot name>: preselect a bot (its default folder/workspace preselects the project)
     var demoRename: String?       // --demo-rename <sessionId>: open the inline rename/color editor of that row
     var demoAgentUser = false     // --demo-agent-user: show the inline "Agent user" status in the panel
     var demoSelect: String?       // --demo-select <sessionId>: start with this session selected (screenshots)
     var prefsFile: URL?           // --prefs-file <path>: personalization file instead of ~/Library/Application Support/AgentBar
+    var demoBotSkill: String?     // --demo-bot-skill <text>: prefill the skill field of the new-bot editor (validation screenshots)
     var demoSettings: String?     // --demo-settings theme|bots|editor: open the Settings window right after launch (screenshots)
 
     static let current = LaunchOptions(arguments: CommandLine.arguments)
@@ -45,6 +46,7 @@ struct LaunchOptions {
             case "--demo-rename": demoRename = next; i += 1
             case "--demo-agent-user": demoAgentUser = true
             case "--prefs-file": prefsFile = next.map { URL(fileURLWithPath: $0) }; i += 1
+            case "--demo-bot-skill": demoBotSkill = next; i += 1
             case "--demo-settings": demoSettings = next ?? "theme"; i += 1
             case "--presentation": presentation = next.flatMap(PresentationStyle.init(rawValue:)); i += 1
             #if DEBUG

@@ -20,7 +20,7 @@ let package = Package(
         // Test host used by Tests/e2e.sh: runs store + server in a temp dir without GUI.
         .executableTarget(name: "agentbar-testhost", dependencies: ["AgentBarCore"],
                           path: "Tests/agentbar-testhost", swiftSettings: strict),
-        .testTarget(name: "AgentBarCoreTests", dependencies: ["AgentBarCore"],
+        .testTarget(name: "AgentBarCoreTests", dependencies: ["AgentBarCore", "agentbar"],
                     path: "Tests/AgentBarCoreTests", swiftSettings: strict),
     ]
 )

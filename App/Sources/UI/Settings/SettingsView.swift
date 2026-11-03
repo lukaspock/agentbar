@@ -275,14 +275,15 @@ private struct BotEditorView: View {
         _agentKind = State(initialValue: bot?.agentKind ?? .claudeCode)
         _blob = State(initialValue: BlobKind(storageName: bot?.blobKindName))
         _prompt = State(initialValue: bot?.startPrompt ?? "")
-        _skill = State(initialValue: bot?.skill ?? "")
+        _skill = State(initialValue: LaunchOptions.current.demoBotSkill ?? bot?.skill ?? "")
         _folder = State(initialValue: bot?.defaultFolder ?? "")
         _workspace = State(initialValue: bot?.defaultWorkspace ?? "")
     }
 
     private var promptTooLong: Bool { prompt.count > PreferenceText.maxStartPromptLength }
     private var nameTooLong: Bool { name.count > PreferenceText.maxNameLength }
-    private var skillTooLong: Bool { skill.count > PreferenceText.maxSkillLength }
+    private var skillTooLong: Bool { skill.count > PreferenceText.maxSkillCommandLength }
+    private var skillInvalid: Bool { !skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && PreferenceText.validSkill(skill) == nil }
     private var folderInvalid: Bool { !folder.trimmingCharacters(in: .whitespaces).isEmpty && PreferenceText.folderPath(folder) == nil }
     private var workspaceInvalid: Bool { !workspace.isEmpty && PreferenceText.workspaceName(workspace) == nil }
     private var canSave: Bool {
@@ -305,6 +306,7 @@ private struct BotEditorView: View {
                         Picker("Agent type", selection: $agentKind) {
                             ForEach(AgentKind.allCases, id: \.self) { Text($0.settingsTitle).tag($0) }
                         }.labelsHidden()
+                        Text("Only Claude Code bots appear in New session.").font(.caption2).foregroundStyle(.secondary)
                     }
                     field("Color") {
                         HStack {
@@ -342,10 +344,10 @@ private struct BotEditorView: View {
             }
             field("Skill (optional)") {
                 TextField("Skill name, e.g. review-code", text: $skill).textFieldStyle(.roundedBorder)
-                if skillTooLong { limitNote("Skill is limited to \(PreferenceText.maxSkillLength) characters.") }
-                else if let cmd = PreferenceText.skillCommandName(skill) {
-                    Text("The first message starts with /\(cmd) (only letters, digits, : _ - are kept).")
-                        .font(.caption2).foregroundStyle(.secondary)
+                if skillTooLong { limitNote("Skill is limited to \(PreferenceText.maxSkillCommandLength) characters.") }
+                else if skillInvalid { limitNote(PreferencesError.invalidSkill.settingsMessage) }
+                else if let cmd = PreferenceText.validSkill(skill) {
+                    Text("The first message starts with /\(cmd).").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             field("Default folder (optional)") {

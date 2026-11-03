@@ -37,7 +37,21 @@ public enum PreferenceText {
     /// Single-line display name. Empty after cleaning => nil.
     public static func name(_ s: String?) -> String? { line(s, max: maxNameLength) }
 
-    public static func skill(_ s: String?) -> String? { line(s, max: maxSkillLength) }
+    /// Strictly valid skill name: trimmed, entirely `[A-Za-z0-9:_-]`, 1...`maxSkillCommandLength` characters; else nil.
+    /// Used to reject bad input on save and to drop bad values from a hand-edited file (no silent cleaning).
+    public static func validSkill(_ s: String?) -> String? {
+        guard let t = s?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty, t.utf8.count <= maxSkillCommandLength,
+              t.utf8.allSatisfy({ ($0 >= 48 && $0 <= 58) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) || $0 == 95 || $0 == 45 })
+        else { return nil }
+        return t
+    }
+
+    /// nil/blank => nil (no skill); a non-blank value that is not a valid skill name throws `invalidSkill`.
+    public static func checkedSkill(_ s: String?) throws -> String? {
+        guard let s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard let v = validSkill(s) else { throw PreferencesError.invalidSkill }
+        return v
+    }
 
     /// Multi-line start prompt (newlines kept, at most two in a row). Empty => nil.
     public static func startPrompt(_ s: String?) -> String? {
@@ -275,5 +289,5 @@ public struct ResolvedAppearance: Sendable, Equatable {
 }
 
 public enum PreferencesError: Error, Equatable {
-    case invalidColor, invalidName, invalidSessionID, notFound, limitReached, invalidFolder, invalidWorkspace
+    case invalidColor, invalidName, invalidSessionID, notFound, limitReached, invalidFolder, invalidWorkspace, invalidSkill
 }

@@ -387,6 +387,35 @@ final class ChatSessionTests: XCTestCase {
         XCTAssertEqual(session(store).state, .done)
     }
 
+    func testForgedInitDoesNotReserveForeignHookSessionId() throws {
+        let (s, store, fake) = make()
+        try s.start()
+        // A hook session of someone else already lives in the store; the (agent-controlled) init line names its id.
+        store.apply(.sessionUpdate(id: "hook-victim", name: "Other", kind: .claudeCode, state: .working, action: nil, supportsStop: nil))
+        fake.emit(#"{"type":"system","subtype":"init","session_id":"hook-victim","model":"m","tools":[]}"#)
+        XCTAssertFalse(store.isChatOwned("hook-victim"), "known store id must not be reserved by agent output")
+        // Own genuine alias still works afterwards (first valid one wins).
+        fake.emit(#"{"type":"system","subtype":"init","session_id":"abc-123","model":"m","tools":[]}"#)
+        XCTAssertTrue(store.isChatOwned("abc-123"))
+        fake.onExit?(0)
+        XCTAssertFalse(store.isChatOwned("abc-123"))
+    }
+
+    func testImplausibleAliasFormatsAreNotReserved() throws {
+        let (s, store, fake) = make()
+        try s.start()
+        for bad in ["a b", "x/y", "x\\ny", "\u{202E}evil", "caf\u{e9}", "a;b", String(repeating: "a", count: 500)] {
+            let esc = bad.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\n", with: "\\n")
+            fake.emit("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"\(esc)\",\"model\":\"m\",\"tools\":[]}")
+            XCTAssertFalse(store.isChatOwned(bad), "reserved: \(bad.prefix(10))")
+        }
+        XCTAssertTrue(ChatSession.isPlausibleAlias("1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed"))
+        XCTAssertTrue(ChatSession.isPlausibleAlias("a_b:c.d-1"))
+        XCTAssertFalse(ChatSession.isPlausibleAlias(""))
+        fake.emit(#"{"type":"system","subtype":"init","session_id":"good-id","model":"m","tools":[]}"#)
+        XCTAssertTrue(store.isChatOwned("good-id"), "a bad alias must not consume the single alias slot")
+    }
+
     func testReservationReleasedAfterExit() throws {
         let (s, store, fake) = make()
         try s.start()

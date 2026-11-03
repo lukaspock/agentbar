@@ -153,11 +153,11 @@ final class PreferencesTests: XCTestCase {
         XCTAssertNil(s.sessionOverride(for: "a").displayName)
 
         let prompt = String(repeating: "p", count: 20_000)
-        let b = try s.createBot(name: "B", colorHex: "#abc123", blobKindName: "../x", agentKind: .claudeCode, startPrompt: prompt, skill: "a\u{202E}b")
+        let b = try s.createBot(name: "B", colorHex: "#abc123", blobKindName: "../x", agentKind: .claudeCode, startPrompt: prompt, skill: " review-code ")
         XCTAssertEqual(b.startPrompt.count, PreferenceText.maxStartPromptLength)
         XCTAssertNil(b.blobKindName)
         XCTAssertEqual(b.colorHex, "#ABC123")
-        XCTAssertFalse(b.skill!.contains("\u{202E}"))
+        XCTAssertEqual(b.skill, "review-code")   // trimmed, otherwise unchanged
     }
 
     func testBotCRUD() throws {
@@ -313,6 +313,39 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(s.bot(id: "typo")?.defaultWorkspace, "ok")
         XCTAssertNil(s.bot(id: "evil")?.defaultFolder)
         XCTAssertNil(s.bot(id: "evil")?.defaultWorkspace)
+    }
+
+    func testInvalidSkillIsRejectedNotCleaned() throws {
+        let s = store()
+        for bad in ["review code", "/review", "a;b", "a\nb", "a\u{202E}b", "../x", String(repeating: "a", count: PreferenceText.maxSkillCommandLength + 1)] {
+            XCTAssertThrowsError(try s.createBot(name: "B", colorHex: "#000000", agentKind: .claudeCode, startPrompt: "", skill: bad), bad) {
+                XCTAssertEqual($0 as? PreferencesError, .invalidSkill)
+            }
+        }
+        XCTAssertTrue(s.bots().isEmpty)
+        // Blank/nil = no skill; valid names (also with ":" and "_") roundtrip.
+        XCTAssertNil(try s.createBot(name: "N", colorHex: "#000000", agentKind: .claudeCode, startPrompt: "", skill: "  ").skill)
+        let ok = try s.createBot(name: "K", colorHex: "#000000", agentKind: .claudeCode, startPrompt: "p", skill: "ckm:design_2-x")
+        XCTAssertEqual(PreferencesStore(fileURL: file).bot(id: ok.id)?.skill, "ckm:design_2-x")
+        var edit = ok; edit.skill = "bad skill"
+        XCTAssertThrowsError(try s.updateBot(edit)) { XCTAssertEqual($0 as? PreferencesError, .invalidSkill) }
+        XCTAssertEqual(s.bot(id: ok.id)?.skill, "ckm:design_2-x")
+        edit.skill = nil
+        XCTAssertNil(try s.updateBot(edit).skill)
+    }
+
+    func testInvalidSkillInOldFileIsDroppedNotTheBot() throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let json = """
+        {"version":1,"bots":[
+        {"id":"good","name":"Good","colorHex":"#112233","agentKind":"claudeCode","startPrompt":"p","skill":"review-code","createdAt":"2026-11-01T10:00:00Z"},
+        {"id":"bad","name":"Bad","colorHex":"#112233","agentKind":"claudeCode","startPrompt":"p","skill":"rm -rf /","createdAt":"2026-11-02T10:00:00Z"}]}
+        """
+        try Data(json.utf8).write(to: file)
+        let s = store()
+        XCTAssertEqual(s.bots().map(\.id), ["good", "bad"])
+        XCTAssertEqual(s.bot(id: "good")?.skill, "review-code")
+        XCTAssertNil(s.bot(id: "bad")?.skill)
     }
 
     func testInitialMessageComposition() {

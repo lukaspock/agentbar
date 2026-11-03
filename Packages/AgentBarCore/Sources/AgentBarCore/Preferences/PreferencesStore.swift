@@ -223,10 +223,11 @@ public final class PreferencesStore: @unchecked Sendable {
                           defaultWorkspace: String? = nil) throws -> Bot {
         guard let n = PreferenceText.name(name) else { throw PreferencesError.invalidName }
         guard let c = HexColor.normalize(colorHex) else { throw PreferencesError.invalidColor }
+        let skillName = try PreferenceText.checkedSkill(skill)
         let folder = try Self.checkedFolder(defaultFolder), workspace = try Self.checkedWorkspace(defaultWorkspace)
         let bot = Bot(id: UUID().uuidString, name: n, colorHex: c, blobKindName: PreferenceText.blobKindName(blobKindName),
                       agentKind: agentKind, startPrompt: PreferenceText.startPrompt(startPrompt) ?? "",
-                      skill: PreferenceText.skill(skill), defaultFolder: folder, defaultWorkspace: workspace, createdAt: Date(timeIntervalSince1970: now().timeIntervalSince1970.rounded(.down)))  // whole seconds: iso8601 roundtrip
+                      skill: skillName, defaultFolder: folder, defaultWorkspace: workspace, createdAt: Date(timeIntervalSince1970: now().timeIntervalSince1970.rounded(.down)))  // whole seconds: iso8601 roundtrip
         try mutateChecked { d in
             guard d.bots.count < Self.maxBots else { throw PreferencesError.limitReached }
             d.bots.append(bot)
@@ -239,6 +240,7 @@ public final class PreferencesStore: @unchecked Sendable {
     public func updateBot(_ bot: Bot) throws -> Bot {
         guard let n = PreferenceText.name(bot.name) else { throw PreferencesError.invalidName }
         guard let c = HexColor.normalize(bot.colorHex) else { throw PreferencesError.invalidColor }
+        let skillName = try PreferenceText.checkedSkill(bot.skill)
         let folder = try Self.checkedFolder(bot.defaultFolder), workspace = try Self.checkedWorkspace(bot.defaultWorkspace)
         var result: Bot?
         try mutateChecked { d in
@@ -246,7 +248,7 @@ public final class PreferencesStore: @unchecked Sendable {
             var b = d.bots[i]
             b.name = n; b.colorHex = c; b.blobKindName = PreferenceText.blobKindName(bot.blobKindName)
             b.agentKind = bot.agentKind; b.startPrompt = PreferenceText.startPrompt(bot.startPrompt) ?? ""
-            b.skill = PreferenceText.skill(bot.skill)
+            b.skill = skillName
             b.defaultFolder = folder; b.defaultWorkspace = workspace
             d.bots[i] = b; result = b
         }
@@ -341,7 +343,7 @@ public final class PreferencesStore: @unchecked Sendable {
             guard let n = PreferenceText.name(b.name), let c = HexColor.normalize(b.colorHex), seen.insert(b.id).inserted else { return nil }
             var x = b
             x.name = n; x.colorHex = c; x.blobKindName = PreferenceText.blobKindName(b.blobKindName)
-            x.startPrompt = PreferenceText.startPrompt(b.startPrompt) ?? ""; x.skill = PreferenceText.skill(b.skill)
+            x.startPrompt = PreferenceText.startPrompt(b.startPrompt) ?? ""; x.skill = PreferenceText.validSkill(b.skill)
             x.defaultFolder = PreferenceText.folderPath(b.defaultFolder); x.defaultWorkspace = PreferenceText.workspaceName(b.defaultWorkspace)
             return x
         }.prefix(maxBots).map { $0 }

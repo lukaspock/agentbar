@@ -58,9 +58,13 @@ let sharedDirDefault = "/Users/Shared/AgentBar"
 
 func fileExists(_ path: String) -> Bool { var st = stat(); return lstat(path, &st) == 0 }
 
+/// Set when `defaultDir()` chose the shared directory: the uid the server behind the socket must have (verified after connect).
+nonisolated(unsafe) var trustedShared: (dir: String, serverUid: uid_t)?
+
 /// Where to connect. Order: `AGENTBAR_DIR` (explicit, as before); else the owner's own directory if its socket exists
 /// (unchanged for the owner); else the shared group directory (`AGENTBAR_SHARED_DIR` or /Users/Shared/AgentBar) if
-/// its socket exists and a token file is readable; else the owner path (-> "app not reachable").
+/// its socket exists, `token.agent` is readable AND the ownership/mode checks of `SharedEndpointTrust` pass; else the owner
+/// path (-> "app not reachable").
 func defaultDir() -> String {
     let env = ProcessInfo.processInfo.environment
     if let d = env["AGENTBAR_DIR"], !d.isEmpty { return d }
@@ -69,12 +73,21 @@ func defaultDir() -> String {
     let own = home + "/Library/Application Support/AgentBar"
     if fileExists(own + "/agentbar.sock") { return own }
     let shared = (env["AGENTBAR_SHARED_DIR"].flatMap { $0.isEmpty ? nil : $0 }) ?? sharedDirDefault
-    if fileExists(shared + "/agentbar.sock"), tokenFile(shared) != nil { return shared }
+    if fileExists(shared + "/agentbar.sock"), access(shared + "/token.agent", R_OK) == 0,
+       let uid = (env["AGENTBAR_TRUST_TEST"] == "1"
+                  // Test-only (e2e with fake uids, no second macOS user): self-owned dir, our primary group counts as the IPC group.
+                  ? SharedEndpointTrust.evaluate(dir: shared, ipcGid: getegid(), allowSelfOwned: true)
+                  : SharedEndpointTrust.evaluate(dir: shared)) {
+        trustedShared = (shared, uid)
+        return shared
+    }
     return own
 }
 
 /// `token` (owner role) first, then `token.agent` (agent role, group-readable). Only files we can actually read count.
 func tokenFile(_ dir: String) -> String? {
+    // The shared directory only ever holds `token.agent`; a `token` file there would be planted.
+    if let t = trustedShared, t.dir == dir { return access(dir + "/token.agent", R_OK) == 0 ? dir + "/token.agent" : nil }
     for name in ["token", "token.agent"] where access(dir + "/" + name, R_OK) == 0 { return dir + "/" + name }
     return nil
 }
@@ -124,6 +137,11 @@ func connectSocket(_ dir: String) -> Int32? {
         rc = (pr > 0 && soErr == 0) ? 0 : -1
     }
     if rc != 0 { close(fd); return nil }
+    // Shared endpoint: the kernel-reported uid of the server must be the expected owner, else this is not our app.
+    if let t = trustedShared, t.dir == dir {
+        var pu: uid_t = 0, pg: gid_t = 0
+        guard getpeereid(fd, &pu, &pg) == 0, pu == t.serverUid else { close(fd); return nil }
+    }
     _ = fcntl(fd, F_SETFL, flags)
     var tv = timeval(tv_sec: Int(connectTimeout), tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))

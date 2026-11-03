@@ -78,7 +78,7 @@ Reihenfolge: P0 → (P1 ‖ P3 ‖ P6 ‖ P7) → (P2, P4, P5) → P6-Verdrahtun
 ## Risiken
 - `claude` im Daemon ohne entsperrte Keychain: UNVERIFIED. Der Token-Weg umgeht die Keychain, der Fallback ist `~/.claude/.credentials.json`.
 - Der Besitzer kann Prozesse fremder UID nicht killen: Stop läuft über den Host, dazu Dead-Man und ein Admin-Notaus-Script.
-- Host und Agent haben dieselbe UID: Host-Binary root-eigen und nicht schreibbar halten.
+- Host und Agent haben dieselbe UID: Host-Binary root-eigen und nicht schreibbar halten. Gehaertet (Phase 7 in CONTRACTS.md): `op: host` prueft per `LOCAL_PEERPID` + `proc_pidpath`, dass der Peer `/usr/local/libexec/agentbar/agentbar-host` ist (root-eigen); ein lebender Host wird nicht verdraengt, ein toter ersetzt. **Restrisiko (bleibt):** ein Prozess des Agent-Benutzers kann den echten Host beenden und sich im Fenster danach anmelden, das echte Binary mit injizierter Bibliothek starten oder debuggen, und `token.agent` lesen (ein eigenes Host-Token hilft nicht, gleiche UID). Er erhaelt dann App-zu-Host-Zeilen und kann Chat-Ausgabe faelschen (Freigaben rendert weiterhin die App). **Kuenftige Option: separater Host-Benutzer** (eigene UID fuer `agentbar-host`, Socket nur fuer diese UID, Rollentabelle um `.host` erweitern).
 - Isolation ist nur Benutzertrennung, kein Sandbox-Ersatz: Der Agent-Benutzer sieht Prozessliste, `/tmp`, Netzwerk inkl. localhost-Dienste. Starke Isolation bräuchte eine VM (Tart/Virtualization.framework); Härtung per `pf`/`sandbox-exec` ist optional und `sandbox-exec` deprecated.
 - Duplex-Op im Thread-pro-Verbindung-Transport; Version-Skew App/Host; gemeinsame Quoten.
 - Computer-Use/GUI-Agents: braucht eigene angemeldete Sitzung und eigene TCC-Rechte, besser VM. Eigener späterer Schritt.

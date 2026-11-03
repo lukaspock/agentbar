@@ -87,3 +87,11 @@ Ziel: Das manuelle Terminal-Setup (Benutzer `agentbar`, Gruppe, Verzeichnisse, D
 4. Fehler- und Rückbaupfade (Teil-Setup erkennen und reparieren; die Lektionen aus Nachtrag 2 in HANDOFF.md).
 **Verteilung:** Für andere Nutzer wäre eine Developer-ID-Signatur plus Notarisierung nötig (bezahlter Apple Developer Account); sonst Gatekeeper-Warnung ("Trotzdem öffnen") oder Selbstbau aus dem Quellcode. Für den eigenen Mac reicht die lokale Signatur.
 **Reihenfolge:** nach B4 und B5. Die Experimente 1 und 2 brauchen den User (Admin-Passwort, Browser-Login).
+
+### B7: Entscheidungen des Users (2026-11-03, nach Machbarkeitsprüfung, Bericht: Docs/research/b7-feasibility.md)
+- **Apple-Account:** kostenlos (kein Developer-ID/Notarisierung). Lokale Signatur genügt für den eigenen Mac; Verteilung an andere später per Gatekeeper-Hinweis oder Selbstbau.
+- **Admin-Weg:** `NSAppleScript do shell script ... with administrator privileges` (ein Passwortdialog), gebündeltes Setup-Script mit einkompiliertem SHA-256 geprüft. `SMAppService` nicht als Hauptweg.
+- **Token:** per PTY-Prototyp (`claude setup-token`, sehr breites PTY, zeilenweises Matching), vorab als Besitzer holen, per kurzlebiger 0600-Datei an das root-Script übergeben, danach löschen: ein Passwortprompt.
+- **Entfernen im Panel:** löscht nach Bestätigung auch das Home des Agent-Benutzers inkl. Workspaces (klare Warnung vorher).
+- **Tests mit dem User:** Admin-Dialog-Testprogramm (`/private/tmp/b7-experiments/admin/osa`, harmlos, `id -u`) und echter `setup-token`-Lauf mit Browser-Login; Token nie im Chat zeigen.
+- **Re-Login sparen:** Gruppenvererbung ist gemessen (macOS vererbt die Verzeichnisgruppe); das Setup legt `/Users/Shared/AgentBar` einmal mit `agentbar-ipc` an, der Server soll kein `chgrp` mehr aufrufen.

@@ -225,11 +225,14 @@ check "shared socket perms 660" 660 "$(perm "$AS/agentbar.sock")"
 check "token.agent perms 640" 640 "$(perm "$AS/token.agent")"
 check "no owner token in shared dir" "no" "$([ -e "$AS/token" ] && echo yes || echo no)"
 # CLI as the agent user: HOME without AgentBar dir, no AGENTBAR_DIR => falls back to the shared dir + token.agent
-agentcli() { env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="$AS" "$CLI" "$@"; }
+# AGENTBAR_TRUST_TEST=1: fake-uid setup (self-owned dir, our primary group as IPC group); real setups use the strict ownership check.
+agentcli() { env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="$AS" AGENTBAR_TRUST_TEST=1 "$CLI" "$@"; }
+# without the test switch the shared dir is NOT trusted (self-owned / no agentbar-ipc group here) -> fallback refused, exit 3
+env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="$AS" "$CLI" update --session agx --state working 2>/dev/null; check "untrusted shared dir refused by CLI" 3 $?
 agentcli update --session ag1 --name AgentOne --state working; check "agent CLI update via group socket" 0 $?
 for _ in $(seq 1 100); do [ "$(sed -n 's/.*sessions=\([0-9]*\).*/\1/p' "$AD/state.txt" 2>/dev/null)" == "1" ] && break; sleep 0.05; done
 check "agent session visible in owner store" 1 "$(sed -n 's/.*sessions=\([0-9]*\).*/\1/p' "$AD/state.txt")"
-OUT=$(echo '{"hook_event_name":"PreToolUse","session_id":"agh","tool_name":"Bash"}' | env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="$AS" "$CLI" hook --adapter claudeCode 2>&1); RC=$?
+OUT=$(echo '{"hook_event_name":"PreToolUse","session_id":"agh","tool_name":"Bash"}' | env -u AGENTBAR_DIR HOME="$AH" AGENTBAR_SHARED_DIR="$AS" AGENTBAR_TRUST_TEST=1 "$CLI" hook --adapter claudeCode 2>&1); RC=$?
 check "agent hook via group socket exit 0" 0 $RC
 # explicit AGENTBAR_DIR still wins (owner dir socket refuses the agent uid -> unreachable, exit 3)
 AGENTBAR_DIR="$AD" "$CLI" update --session ag2 --state working 2>/dev/null; check "agent uid refused on owner socket" 3 $?

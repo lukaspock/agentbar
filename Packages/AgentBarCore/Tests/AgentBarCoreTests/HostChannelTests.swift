@@ -22,7 +22,7 @@ final class HostChannelTests: XCTestCase {
         store = SessionStore()
         peer = FakePeer(uid: agentUid)
         let sec = TransportSecurity(ownerUid: ownerUid, agentUid: agentUid, sharedDirectory: sharedDir, sharedGid: getgid(),
-                                    peerCredentials: peer.credentials)
+                                    peerCredentials: peer.credentials, hostBinary: .disabled)
         server = TransportServer(store: store, adapters: ["claudeCode": FakeAdapter()], directory: base.appendingPathComponent("owner"), security: sec)
         try server.start()
         XCTAssertEqual(server.sharedStatus, .active)
@@ -78,6 +78,79 @@ final class HostChannelTests: XCTestCase {
         r = await call(hello(token: "bogus"))
         XCTAssertEqual(r["error"] as? String, "unauthorized")
         XCTAssertFalse(server.hostClient.isConnected)
+    }
+
+    // MARK: host binary check (LOCAL_PEERPID + proc_pidpath)
+
+    func restart(policy: HostBinaryPolicy) throws {
+        server.stop()
+        let sec = TransportSecurity(ownerUid: ownerUid, agentUid: agentUid, sharedDirectory: sharedDir, sharedGid: getgid(),
+                                    peerCredentials: peer.credentials, hostBinary: policy)
+        server = TransportServer(store: store, adapters: ["claudeCode": FakeAdapter()], directory: base.appendingPathComponent("owner2"), security: sec)
+        try server.start()
+        XCTAssertEqual(server.sharedStatus, .active)
+    }
+
+    func testHostWithWrongBinaryPathIsRefused() async throws {
+        try restart(policy: HostBinaryPolicy(allowedPaths: ["/usr/local/libexec/agentbar/agentbar-host"], requireRootOwned: false,
+                                             peerPid: { _ in 4242 }, pathOfPid: { _ in "/usr/bin/python3" }))
+        var r = await call(hello()); XCTAssertEqual(r["error"] as? String, "forbidden", "script interpreter")
+        try restart(policy: HostBinaryPolicy(allowedPaths: ["/usr/local/libexec/agentbar/agentbar-host"], requireRootOwned: false,
+                                             peerPid: { _ in 4242 }, pathOfPid: { _ in "/Users/agentbar/copy/agentbar-host" }))
+        r = await call(hello()); XCTAssertEqual(r["error"] as? String, "forbidden", "copied binary")
+        try restart(policy: HostBinaryPolicy(allowedPaths: ["/x"], requireRootOwned: false, peerPid: { _ in nil }, pathOfPid: { _ in "/x" }))
+        r = await call(hello()); XCTAssertEqual(r["error"] as? String, "forbidden", "no peer pid")
+        XCTAssertFalse(server.hostClient.isConnected)
+    }
+
+    func testHostWithAllowedBinaryPathIsAccepted() async throws {
+        let me = HostBinaryPolicy.systemPathOfPid(getpid())!      // the test process itself plays the host binary
+        try restart(policy: HostBinaryPolicy(allowedPaths: [me], requireRootOwned: false))   // real LOCAL_PEERPID + proc_pidpath
+        let r = await call(hello())
+        XCTAssertEqual(r["event"] as? String, "ready")
+    }
+
+    func testRootOwnershipOfTheBinaryIsRequired() async throws {
+        let me = try fixture.script("fake-host", "exit 0").path       // right path, but owned by us, not root
+        try restart(policy: HostBinaryPolicy(allowedPaths: [me], requireRootOwned: true, peerPid: { _ in 4242 }, pathOfPid: { _ in me }))
+        let r = await call(hello())
+        XCTAssertEqual(r["error"] as? String, "forbidden")
+        XCTAssertTrue(HostBinaryPolicy.rootOwnedNotWritable("/usr/bin"))
+        XCTAssertFalse(HostBinaryPolicy.rootOwnedNotWritable(NSTemporaryDirectory()))
+    }
+
+    func testDefaultPolicyRefusesTheTestProcessAndIsSecureByDefault() async throws {
+        XCTAssertEqual(HostBinaryPolicy.standard.allowedPaths, ["/usr/local/libexec/agentbar/agentbar-host"])
+        XCTAssertEqual(TransportSecurity().hostBinary.allowedPaths, ["/usr/local/libexec/agentbar/agentbar-host"])
+        try restart(policy: .standard)
+        let r = await call(hello()); XCTAssertEqual(r["error"] as? String, "forbidden")
+    }
+
+    // MARK: replacing a dead host, never a living one
+
+    func testSilentDeadHostIsReplacedByNewHost() async throws {
+        let p = server.sharedSocketPath!
+        let tok = server.agentTokenForTests
+        let first: RawClient? = RawClient(path: p)
+        let c1 = try XCTUnwrap(first)
+        defer { c1.close_() }
+        let h = hello(token: tok)
+        let l1 = await detached { c1.send(h + "\n"); return c1.readLine() }
+        XCTAssertTrue(l1?.contains("ready") == true)
+        XCTAssertTrue(server.hostClient.isConnected)
+        // c1 now never answers a ping (frozen host): the newcomer replaces it after the probe window.
+        let r = await call(hello())
+        XCTAssertEqual(r["event"] as? String, "ready", "dead host must be replaceable")
+    }
+
+    func testLivingHostIsNotDisplacedByAnotherHost() async throws {
+        try fixture.workspace("ws")
+        _ = startRunner(claude: try fixture.script("claude", "exec cat"))
+        await expectMain("") { self.server.hostClient.isConnected }
+        let r = await call(hello())
+        XCTAssertEqual(r["error"] as? String, "host already connected")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(server.hostClient.isConnected, "answering host keeps its place")
     }
 
     func testBadHelloIsRejected() async {

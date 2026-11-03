@@ -2,19 +2,19 @@ import SwiftUI
 import AppKit
 import AgentBarCore
 
-/// State of the inline "New session" flow in the notch panel: Run as, Project, Bot, Start. Pure logic, no windows
+/// State of the inline "New session" flow in the notch panel: Run as, Bot, Project, Start. Pure logic, no windows
 /// (the folder dialog is opened by the view through `FolderPicker`), so it stays testable.
 @MainActor
 final class NewSessionFlowModel: ObservableObject {
     enum RunAs { case me, agent }
     enum Choice: Hashable { case existing(String), new }
     enum Step: Int, CaseIterable {
-        case runAs, project, bot, start
+        case runAs, bot, project, start
         var title: String {
             switch self {
             case .runAs: return "Run as"
-            case .project: return "Project"
             case .bot: return "Bot"
+            case .project: return "Project"
             case .start: return "Start"
             }
         }
@@ -46,6 +46,8 @@ final class NewSessionFlowModel: ObservableObject {
     var onStarted: (String) -> Void = { _ in }
     private var lockTask: Task<Void, Never>?
     private var workspaceDefaultApplied = false
+    /// A bot was chosen (or Run as changed) since the defaults were last applied to the project choice.
+    private var botDefaultsPending = false
 
     init(host: AgentHostClient, prefs: PreferencesStore) {
         self.host = host
@@ -55,11 +57,11 @@ final class NewSessionFlowModel: ObservableObject {
     }
 
     var ownerName: String { NSUserName() }
-    var bots: [Bot] { prefs.bots() }
+    /// Chat can only start Claude Code, so bots of other agent types are not offered here (they stay in Settings).
+    var bots: [Bot] { prefs.bots().filter(isSelectable) }
     var selectedBot: Bot? { botId.flatMap { prefs.bot(id: $0) } }
     var newNameInvalid: Bool { !newName.isEmpty && !AgentUser.isValidWorkspaceName(newName) }
 
-    /// Chat can only start Claude Code; bots of other agent types are listed but not selectable.
     func isSelectable(_ bot: Bot) -> Bool { bot.agentKind == .claudeCode }
 
     var projectReady: Bool {
@@ -76,8 +78,8 @@ final class NewSessionFlowModel: ObservableObject {
         guard !busy else { return false }
         switch step {
         case .runAs: return runAs == .me || hostAvailable
-        case .project: return projectReady
         case .bot: return true
+        case .project: return projectReady
         case .start: return projectReady && !locked
         }
     }
@@ -112,9 +114,9 @@ final class NewSessionFlowModel: ObservableObject {
     func advance() {
         guard canAdvance else { return }
         switch step {
-        case .runAs: go(.project)
-        case .project: go(.bot)
-        case .bot: go(.start)
+        case .runAs: go(.bot)
+        case .bot: go(.project)
+        case .project: go(.start)
         case .start: Task { await start() }
         }
     }
@@ -124,9 +126,9 @@ final class NewSessionFlowModel: ObservableObject {
         error = nil
         switch step {
         case .runAs: onClose()
-        case .project: go(.runAs)
-        case .bot: go(.project)
-        case .start: go(.bot)
+        case .bot: go(.runAs)
+        case .project: go(.bot)
+        case .start: go(.project)
         }
     }
 
@@ -134,7 +136,14 @@ final class NewSessionFlowModel: ObservableObject {
         step = next
         error = nil
         lock()
-        if next == .project, runAs == .agent { Task { await loadWorkspaces() } }
+        if next == .project { Task { await prepareProject() } }
+    }
+
+    /// Entering the Project step: load the workspaces (agent user), then apply the bot's default once per bot choice.
+    private func prepareProject() async {
+        if runAs == .agent { await loadWorkspaces() }
+        if botDefaultsPending, let bot = selectedBot { applyDefaults(of: bot) }
+        botDefaultsPending = false
     }
 
     func select(_ r: RunAs) {
@@ -142,6 +151,8 @@ final class NewSessionFlowModel: ObservableObject {
         runAs = r
         error = nil
         projectFromBot = false
+        botNote = nil
+        botDefaultsPending = botId != nil
     }
 
     func loadWorkspaces() async {
@@ -170,10 +181,10 @@ final class NewSessionFlowModel: ObservableObject {
         botId = id
         botNote = nil
         projectFromBot = false
-        if let bot = selectedBot { applyDefaults(of: bot) }
+        botDefaultsPending = id != nil
     }
 
-    /// The bot's default folder/workspace replaces the project choice (changeable on the Project step).
+    /// The bot's default folder/workspace preselects the project (changeable on the Project step).
     private func applyDefaults(of bot: Bot) {
         switch runAs {
         case .me:
@@ -252,11 +263,11 @@ final class NewSessionFlowModel: ObservableObject {
         if let folder = o.demoFlowFolder { localDirectory = URL(fileURLWithPath: (folder as NSString).expandingTildeInPath, isDirectory: true) }
         if let name = o.demoFlowBot, let bot = prefs.bots().first(where: { $0.name == name }) { selectBot(bot.id) }
         guard let stepName = o.demoFlowStep else { return }
-        let target: Step = ["project": .project, "bot": .bot, "start": .start][stepName] ?? .runAs
+        let target: Step = ["bot": .bot, "project": .project, "start": .start][stepName] ?? .runAs
         Task {
             if runAs == .agent { await loadWorkspaces() }
             if let n = o.demoFlowNewName { choice = .new; newName = n }
-            if let bot = selectedBot { applyDefaults(of: bot) }
+            if target == .project || target == .start { await prepareProject() }
             step = target
             lock()
         }
@@ -302,8 +313,8 @@ struct NewSessionFlowView: View {
             ZStack(alignment: .topLeading) {
                 switch model.step {
                 case .runAs: runAsStep
-                case .project: projectStep
                 case .bot: botStep
+                case .project: projectStep
                 case .start: startStep
                 }
             }
@@ -374,7 +385,7 @@ struct NewSessionFlowView: View {
         }
     }
 
-    // MARK: step 2
+    // MARK: step 3
 
     @ViewBuilder private var projectStep: some View {
         switch model.runAs {
@@ -400,9 +411,16 @@ struct NewSessionFlowView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.08)))
-            if model.projectFromBot {
-                Text("Preselected by the bot. You can change it.").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
-            }
+            projectNotes
+        }
+    }
+
+    @ViewBuilder private var projectNotes: some View {
+        if model.projectFromBot {
+            Text("(from bot) You can change it.").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+        }
+        if let note = model.botNote {
+            Text(note).font(.system(size: 10)).foregroundStyle(BarTheme.needsInput).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -435,17 +453,15 @@ struct NewSessionFlowView: View {
                         .font(.system(size: 10)).foregroundStyle(BarTheme.error)
                 }
             }
-            if model.projectFromBot {
-                Text("Preselected by the bot. You can change it.").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
-            }
+            projectNotes
         }
     }
 
-    // MARK: step 3
+    // MARK: step 2
 
     private var botStep: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Which bot should work there?").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+            Text("Which bot should run this session?").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
             ScrollView(.vertical, showsIndicators: model.bots.count > 3) {
                 VStack(spacing: 4) {
                     botRow(bot: nil)
@@ -463,15 +479,11 @@ struct NewSessionFlowView: View {
                     }.buttonStyle(.plain)
                 }
             }
-            if let note = model.botNote {
-                Text(note).font(.system(size: 10)).foregroundStyle(BarTheme.needsInput).fixedSize(horizontal: false, vertical: true)
-            }
         }
     }
 
     private func botRow(bot: Bot?) -> some View {
         let selected = model.botId == bot?.id
-        let enabled = bot.map { model.isSelectable($0) } ?? true
         return Button { model.selectBot(bot?.id) } label: {
             HStack(spacing: 10) {
                 if let bot {
@@ -496,14 +508,11 @@ struct NewSessionFlowView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.4)
     }
 
     private func botSubtitle(_ bot: Bot?) -> String {
         guard let bot else { return "Plain Claude, no start prompt" }
-        if !model.isSelectable(bot) { return "\(bot.agentKind.settingsTitle) · chat starts Claude Code only" }
-        var s = bot.agentKind.settingsTitle
+        var s = "Claude Code"
         if let skill = PreferenceText.skillCommandName(bot.skill) { s += " · /\(skill)" }
         if let f = bot.defaultFolder { s += " · " + (f as NSString).lastPathComponent }
         else if let w = bot.defaultWorkspace { s += " · \(w)" }

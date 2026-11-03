@@ -131,8 +131,10 @@ public final class ChatSession {
         case let .systemInit(cliSessionId, model):
             // Hooks of this very claude process report ITS session id, not our `chat-...` id. Reserve it too, otherwise a hook
             // (e.g. from the agent user's ~/.claude/settings.json) would raise a second approval next to the chat's own one.
-            if let a = cliSessionId, !a.isEmpty, a.count <= AgentBarLimits.maxIdLength, a != sessionId, cliAliasId == nil,
-               !store.isChatOwned(a) {
+            // The id comes from agent output, so it is untrusted: only plausible formats, and never an id the store already knows
+            // (e.g. a live hook session of another agent: reserving it would lock that session out with "session reserved").
+            if let a = cliSessionId, Self.isPlausibleAlias(a), a != sessionId, cliAliasId == nil,
+               !store.isChatOwned(a), !store.sessions.contains(where: { $0.id == a }) {
                 store.markChatOwned(a); cliAliasId = a
             }
             if let m = ClaudeCodeAdapter.clean(model, max: 60) {
@@ -395,6 +397,15 @@ public final class ChatSession {
                     return
                 }
             }
+        }
+    }
+
+    /// Characters of a real claude session id (UUID-like). Anything else is not reserved.
+    static func isPlausibleAlias(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= AgentBarLimits.maxIdLength else { return false }
+        return id.unicodeScalars.allSatisfy { u in
+            (u.value >= 0x30 && u.value <= 0x39) || (u.value >= 0x41 && u.value <= 0x5A) || (u.value >= 0x61 && u.value <= 0x7A)
+                || u == "_" || u == "-" || u == ":" || u == "."
         }
     }
 
