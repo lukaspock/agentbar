@@ -16,11 +16,14 @@ targets:
     dependencies:
       - package: AgentBarCore
     postBuildScripts:
-      - name: Bundle agentbar CLI
+      - name: Bundle agentbar CLI, host and installer payload
         script: '"$SRCROOT/Scripts/bundle-cli.sh"'
         basedOnDependencyAnalysis: false
         inputFiles:
           - $(SRCROOT)/../Packages/AgentBarCore/Sources/agentbar/main.swift
+          - $(SRCROOT)/../Packages/AgentBarCore/Sources/agentbar-host/main.swift
+          - $(SRCROOT)/../Scripts/setup-agent-user.sh
+          - $(SRCROOT)/../Scripts/com.agentbar.host.plist.template
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.AgentBar

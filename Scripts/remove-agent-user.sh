@@ -119,7 +119,10 @@ fi
 [[ "$AGENT_USER" == "agentbar" ]] || die "internal: unexpected user name"
 if user_exists; then
   uid="$(id -u "$AGENT_USER")"
-  [[ "$uid" -ge 501 ]] || die "refusing: UID $uid is a system account"
+  # Role account (UID 200..399, shell /usr/bin/false) or a legacy login account; never a system account.
+  [[ "$uid" -ge 200 ]] || die "refusing: UID $uid is a system account"
+  shell="$(dscl . -read "/Users/${AGENT_USER}" UserShell 2>/dev/null | awk '{print $2}')"
+  if [[ "$uid" -lt 500 && "$shell" != "/usr/bin/false" ]]; then die "refusing: UID $uid with shell '${shell}' does not look like the agent role account"; fi
   [[ "${SUDO_USER:-}" != "$AGENT_USER" ]] || die "refusing: run as the owner, not the agent user"
   [[ "$(id -un 2>/dev/null)" != "$AGENT_USER" ]] || die "refusing: running as the agent user"
 fi
@@ -148,15 +151,20 @@ for f in "$PLIST_DST" "$CLI_DST" "$LOG_FILE"; do
 done
 if [[ -d "$HOST_DIR" ]]; then run rm -rf -- "$HOST_DIR"; else info "absent: $HOST_DIR"; fi
 
+step "Remove setup status/staging data"
+if [[ -d "/Library/Application Support/AgentBar" ]]; then run rm -rf -- "/Library/Application Support/AgentBar"; else info "absent"; fi
+
 step "Remove IPC directory ${IPC_DIR}"
 if [[ -d "$IPC_DIR" ]]; then run rm -rf -- "$IPC_DIR"; else info "absent"; fi
 
 step "Delete user '${AGENT_USER}'"
 if user_exists; then
+  # Role accounts are plain dscl records, so delete the record directly (sysadminctl may not know them).
+  run dscl . -delete "/Users/${AGENT_USER}"
   if [[ $KEEP_HOME -eq 1 ]]; then
-    run sysadminctl -deleteUser "$AGENT_USER" -keepHome
-  else
-    run sysadminctl -deleteUser "$AGENT_USER"
+    info "home kept: ${AGENT_HOME}"
+  elif [[ -d "$AGENT_HOME" && ! -L "$AGENT_HOME" ]]; then
+    run rm -rf -- "$AGENT_HOME"
   fi
 else
   info "user does not exist"
