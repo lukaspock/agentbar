@@ -87,3 +87,20 @@ Reihenfolge: P0 → (P1 ‖ P3 ‖ P6 ‖ P7) → (P2, P4, P5) → P6-Verdrahtun
 - Exakter Pfad für das Notaus-Script und wer es auslöst.
 - Ob Hooks im Agent-Home nur für Terminal-Sessions oder auch für den Host-`claude` aktiv sein sollen (Doppel-Freigabe).
 - Name der Gruppe und des Benutzers final (`agentbar`, `agentbar-ipc` als Vorschlag).
+
+## Admin-Installer (O2, 2026-11-05)
+Ersetzt den manuellen `sudo`-Ablauf oben fuer den Onboarding-Weg; das Script bleibt auch von Hand nutzbar (`--dry-run`).
+
+**Ablauf:** `AdminInstaller` (App/Sources/Setup, `SetupAdminBlock`) prueft die gebuendelte Payload `Resources/AgentSetup/` gegen `manifest.json` (SHA-256, von `App/Scripts/bundle-cli.sh` nach dem Signieren erzeugt), baut EIN Root-Programm und fuehrt es per `NSAppleScript` (`do shell script ... with administrator privileges`, Hintergrund-Thread) aus. Das Programm legt ein root-eigenes Staging (`/Library/Application Support/AgentBar/staging.XXXXXX`, 0700) an, kopiert die vier Payload-Dateien per `ditto`, setzt root:wheel, lehnt Symlinks/Fremddateien ab (Exit 71), prueft die Hashes **auf der Staging-Kopie** (Exit 72) und startet erst dann `setup-agent-user.sh` von dort. Quoting/Manifest/Statuszeilen sind reine Funktionen (`AdminInstallerSupport.swift` im Core, getestet).
+
+**Script (nicht interaktiv):** `--owner NAME` (Pflicht, Allow-List `[A-Za-z0-9._-]`), `--steps`, `--host-binary`, `--cli-binary`, `--token-file`, `--run-id`, `--migrate`, `--dry-run`. Steps: `agentUser` (Role-Account per `dscl`: UID = hoechste belegte UID in 200..399 + 1, Shell `/usr/bin/false`, Passwort `*`, `IsHidden 1`, Home per `install -d` 700 agentbar:staff, Gruppe `agentbar-ipc`, `/Users/Shared/AgentBar` 0750 Besitzer:`agentbar-ipc` - die Gruppe sitzt am Verzeichnis, daher kein Re-Login), `cli` (`/usr/local/bin/agentbar`), `hostBinary` (`/usr/local/libexec/agentbar/agentbar-host`, `xattr -c`, `cmp -s`; danach LaunchDaemon und Post-Check `launchctl print system/com.agentbar.host`: `state = running`, kein `last exit code = 78`, bis 20 s), `claudeToken`.
+
+**Bestehender Account:** Ist `agentbar` schon da und kein Role-Account (z. B. alte uid 502 mit Login-Shell), wird nichts veraendert: Exit 20 mit klarer Meldung (`AdminInstallerError.legacyAccount`). Erst mit `--migrate` (App: `AdminInstaller(migrate: true)` nach Rueckfrage) wird er in place umgestellt: Daemon und Prozesse stoppen, neue UID im Role-Bereich, Shell/Passwort/AuthenticationAuthority bereinigt, Home per `chown -R -P` angepasst. Nichts wird geloescht.
+
+**Token:** Die App legt den Token als kurzlebige 0600-Datei ab und uebergibt nur den Pfad (`tokenFile`-Closure). Das Script prueft regulaere Datei, kein Symlink, 0600, Besitzer = Owner/root, Zeichensatz/Laenge; schreibt nach `/Users/agentbar/.config/agentbar/claude-oauth-token` (0600, agentbar:staff) und loescht die Quelle (auch bei Fehlern; die App loescht zusaetzlich).
+
+**Fortschritt:** JSON-Zeilen in `/Library/Application Support/AgentBar/setup-status.jsonl` (root, 0644, fester Pfad, pro Lauf neu; Felder `seq, run, step, state, msg`). Die App liest alle 300 ms und filtert nach `run`-ID.
+
+**Aufraeumen:** `remove-agent-user.sh` kennt den Role-Account (`dscl -delete`, Home nur ohne `--keep-home`) und entfernt das Status-/Staging-Verzeichnis.
+
+**Restrisiken / nicht verifiziert:** Das Manifest liegt im selben (App-)Bundle wie die Binaries; es schuetzt vor Austausch zwischen Pruefung und Ausfuehrung (TOCTOU), nicht vor einem vor dem Start manipulierten Bundle (dagegen hilft nur eine Signatur-/Notarisierungspruefung). Die Token-Quelle wird mit `stat` geprueft und dann gelesen (kleines Zeitfenster, Aufrufer ist ohnehin Admin). Echte Ausfuehrung (Prompt, dscl, Daemon, Migration) wurde nicht getestet.
