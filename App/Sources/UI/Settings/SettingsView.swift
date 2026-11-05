@@ -7,7 +7,7 @@ struct SettingsView: View {
 
     init(hub: PreferencesHub, page: SettingsPage) {
         self.hub = hub
-        _tab = State(initialValue: page == .theme || page == .mascot ? page : .bots)
+        _tab = State(initialValue: page == .theme || page == .mascot || page == .setup ? page : .bots)
         self.initialPage = page
     }
 
@@ -20,6 +20,7 @@ struct SettingsView: View {
                 BotsSettingsView(hub: hub, openEditorOnAppear: initialPage == .editor)
                     .tabItem { Label("Bots", systemImage: "face.smiling") }.tag(SettingsPage.bots)
                 MascotSettingsView(hub: hub).tabItem { Label("Mascot", systemImage: "sparkles") }.tag(SettingsPage.mascot)
+                SetupSettingsView().tabItem { Label("Setup", systemImage: "checklist") }.tag(SettingsPage.setup)
             }
             if hub.store.isReadOnly || hub.store.lastSaveError != nil {
                 Text(hub.store.isReadOnly ? "The preferences file could not be read or backed up, so changes are not saved."
@@ -412,5 +413,70 @@ private struct BotEditorView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+// MARK: Setup
+
+/// Read-only status list of the setup steps (same rows as the onboarding) plus a button to open the onboarding.
+private struct SetupSettingsView: View {
+    @State private var state: SetupState?
+    @State private var loading = false
+
+    private static let order: [SetupStep] = [.claudeCLI, .agentUser, .hostBinary, .cli, .claudeToken, .claudeHooks, .codexHooks, .autostart, .notifications]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Setup").font(.headline)
+                Spacer()
+                Button("Refresh") { Task { await load() } }.disabled(loading)
+                Button("Open setup…") { SetupCoordinator.shared.show() }
+            }
+            if SetupCoordinator.shared.runner == nil {
+                Text("Demo mode: no real setup state.").font(.caption).foregroundStyle(.secondary)
+            }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(Self.order.enumerated()), id: \.element) { i, step in
+                        if i > 0 { Divider() }
+                        row(step)
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .task { await load() }
+    }
+
+    private func row(_ step: SetupStep) -> some View {
+        let status = state?.status(of: step)
+        let (icon, color, text): (String, Color, String) = {
+            switch status {
+            case .done?: return ("checkmark.circle.fill", .green, "Done")
+            case .failed(let m)?: return ("exclamationmark.circle.fill", .red, m)
+            case .notApplicable(let m)?: return ("minus.circle", .secondary, m)
+            case .running?: return ("circle.dotted", .secondary, "Running")
+            case .missing?: return ("circle", .orange, "Not set up")
+            case nil: return ("circle.dotted", .secondary, loading ? "Checking…" : "Unknown")
+            }
+        }()
+        return HStack(spacing: 10) {
+            Image(systemName: icon).foregroundStyle(color).frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(step.onboardingTitle)
+                Text(step.onboardingDetail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.trailing).frame(maxWidth: 200, alignment: .trailing)
+        }
+        .padding(.vertical, 7)
+    }
+
+    private func load() async {
+        guard let runner = SetupCoordinator.shared.runner else { return }
+        loading = true
+        state = await runner.refresh()
+        loading = false
     }
 }

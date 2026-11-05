@@ -6,6 +6,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let manager: PresentationManager
 
     /// Extension point: each factory is called whenever the menu opens; items are inserted above "Presentation".
+    /// "Setup…" entry (opens the onboarding window).
+    var setupAction: (() -> Void)?
+
     var extraMenuItems: [() -> NSMenuItem] = []
 
     /// Visible error state (e.g. transport failed to start): warning icon plus a disabled menu line.
@@ -68,6 +71,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(toggleItem("Sound on new request", on: AttentionSettings.soundEnabled, action: #selector(toggleSound)))
         menu.addItem(toggleItem("Auto-expand on new request", on: AttentionSettings.autoExpandEnabled, action: #selector(toggleAutoExpand)))
         menu.addItem(.separator())
+        if setupAction != nil {
+            let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: "")
+            setup.target = self
+            menu.addItem(setup)
+        }
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -81,6 +89,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         item.state = on ? .on : .off
         return item
     }
+
+    @objc private func openSetup() { setupAction?() }
 
     @objc private func openSettings() { SettingsWindowController.show() }
 

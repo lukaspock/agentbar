@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// Which part of the settings to show first (also used by the `--demo-settings` screenshot flag).
-enum SettingsPage: String { case theme, bots, editor, mascot }
+enum SettingsPage: String { case theme, bots, editor, mascot, setup }
 
 /// Normal (non-floating) window for the personalization settings. One instance; reopening fronts it.
 @MainActor

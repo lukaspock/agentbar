@@ -1,7 +1,7 @@
 import Foundation
 import AgentBarCore
 
-/// Launch arguments: --demo, --demo-state <name>, --demo-expanded, --presentation notch|pill|circle
+/// Launch arguments: --demo-onboarding [page], --onboarding-force, --demo, --demo-state <name>, --demo-expanded, --presentation notch|pill|circle
 /// DEBUG only: --auto-answer <optionId> (answers the first pending request 2 s after it appears).
 struct LaunchOptions {
     var demo = false
@@ -23,6 +23,8 @@ struct LaunchOptions {
     var prefsFile: URL?           // --prefs-file <path>: personalization file instead of ~/Library/Application Support/AgentBar
     var demoBotSkill: String?     // --demo-bot-skill <text>: prefill the skill field of the new-bot editor (validation screenshots)
     var demoSettings: String?     // --demo-settings theme|bots|editor: open the Settings window right after launch (screenshots)
+    var demoOnboarding: String?   // --demo-onboarding [welcome|login|setup|done|error]: onboarding with a fake runner; touches nothing real
+    var onboardingForce = false   // --onboarding-force: show the onboarding at start even if it was completed
 
     static let current = LaunchOptions(arguments: CommandLine.arguments)
 
@@ -48,6 +50,10 @@ struct LaunchOptions {
             case "--prefs-file": prefsFile = next.map { URL(fileURLWithPath: $0) }; i += 1
             case "--demo-bot-skill": demoBotSkill = next; i += 1
             case "--demo-settings": demoSettings = next ?? "theme"; i += 1
+            case "--demo-onboarding":
+                demo = true
+                if let n = next, !n.hasPrefix("--") { demoOnboarding = n; i += 1 } else { demoOnboarding = "welcome" }
+            case "--onboarding-force": onboardingForce = true
             case "--presentation": presentation = next.flatMap(PresentationStyle.init(rawValue:)); i += 1
             #if DEBUG
             case "--auto-answer": autoAnswer = next; i += 1
@@ -55,6 +61,10 @@ struct LaunchOptions {
             default: break
             }
             i += 1
+        }
+        // The onboarding demo must never read or write the real preferences (mascot, settings window).
+        if demoOnboarding != nil, prefsFile == nil {
+            prefsFile = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("agentbar-demo-onboarding-prefs.json")
         }
     }
 }

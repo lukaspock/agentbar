@@ -39,10 +39,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppHooks.menuItemFactories.append(CodexHookSetupMenu.menuItemFactory)
         menu.extraMenuItems = AppHooks.menuItemFactories
         menu.errorMessage = startupError
+        SetupCoordinator.shared.configure(options: env.options, hostClient: env.server?.hostClient)
+        menu.setupAction = { SetupCoordinator.shared.show() }
         environment = env
         presentations = manager
         self.menu = menu
         manager.start()
+        // Give the host channel a moment to connect before the (read-only) probes run.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (env.options.demoOnboarding != nil ? 0.6 : 2.0)) {
+            SetupCoordinator.shared.showAtLaunchIfNeeded()
+        }
         if env.options.demoNewChat { DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { NewChatFlow.run() } }
         if env.options.demoAgentUser { DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { PanelRouter.shared.openAgentUser() } }
         // SIGTERM/SIGINT (e.g. `pkill AgentBar`) go through a normal quit so socket and token get removed.
