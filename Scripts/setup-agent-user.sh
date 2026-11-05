@@ -360,25 +360,42 @@ if want claudeToken; then
     if [[ $DRY_RUN -eq 0 ]]; then trap 'rm -f -- "$TOKEN_SRC"; rm -f "${rendered:-}"' EXIT; fi
     [[ "$TOKEN_SRC" == /* ]] || die "token file path must be absolute"
     [[ -f "$TOKEN_SRC" && ! -L "$TOKEN_SRC" ]] || die "token file missing or not a regular file"
+    # Open the file ONCE and validate the open descriptor (not the path), so a
+    # swap to a symlink between check and read cannot redirect root's read.
+    exec 3< "$TOKEN_SRC" || die "cannot open token file"
+    # (the mode of /dev/fd/N reflects the open mode, so the mode is checked on the path;
+    # type, owner, link count and size come from the descriptor)
     tsrc_mode="$(stat -f %Lp "$TOKEN_SRC")"
-    tsrc_uid="$(stat -f %u "$TOKEN_SRC")"
+    tsrc_stat="$(stat -f '%HT %u %l %z' /dev/fd/3)" || die "cannot stat token file"
+    read -r tsrc_type1 tsrc_type2 tsrc_uid tsrc_links tsrc_size <<< "$tsrc_stat"
+    [[ "$tsrc_type1 $tsrc_type2" == "Regular File" ]] || die "token file is not a regular file"
     [[ "$tsrc_mode" == "600" ]] || die "token file must be mode 0600 (is ${tsrc_mode})"
-    [[ "$tsrc_uid" == "$(id -u "$OWNER")" || "$tsrc_uid" == "0" ]] || die "token file is not owned by the owner"
-    [[ "$(stat -f %z "$TOKEN_SRC")" -le 8192 ]] || die "token file too large"
-    token="$(LC_ALL=C tr -d '\r\n\t ' < "$TOKEN_SRC")"
+    # Owner only: never accept a root-owned file here (it could be any system file).
+    [[ "$tsrc_uid" == "$(id -u "$OWNER")" && "$tsrc_uid" != "0" ]] || die "token file is not owned by the owner"
+    [[ "$tsrc_links" == "1" ]] || die "token file has multiple links"
+    [[ "$tsrc_size" -le 8192 ]] || die "token file too large"
+    token="$(LC_ALL=C tr -d '\r\n\t ' <&3)"
+    exec 3<&-
     # (bash's regex repetition limit is 255, so the length is checked separately)
     [[ "$token" =~ ^[A-Za-z0-9._-]+$ && ${#token} -ge 20 && ${#token} -le 4096 ]] || die "token file content does not look like a Claude token"
     if [[ $DRY_RUN -eq 1 ]]; then
       info "would move the token into ${AGENT_HOME}/${TOKEN_DIR_REL}/${TOKEN_NAME} (0600) and delete the source"
     else
       user_exists || die "agent user missing; cannot store token"
-      tdir="${AGENT_HOME}/${TOKEN_DIR_REL}"
-      install -d -o "$AGENT_USER" -g staff -m 700 "${AGENT_HOME}/.config" "$tdir"
-      ttmp="$(mktemp "${tdir}/.token.XXXXXX")"
-      chmod 600 "$ttmp"
-      printf '%s\n' "$token" > "$ttmp"
-      chown "${AGENT_USER}:staff" "$ttmp"
-      mv -f "$ttmp" "${tdir}/${TOKEN_NAME}"
+      # The agent home is controlled by the less-trusted agent user, so root must
+      # not touch paths inside it: perform every file operation AS the agent user.
+      printf '%s\n' "$token" | sudo -n -u "$AGENT_USER" -H /bin/sh -c '
+        set -e
+        umask 077
+        d="$HOME/$1"
+        for p in "$HOME/.config" "$d"; do
+          [ ! -L "$p" ] || { echo "refusing symlink: $p" >&2; exit 1; }
+          [ -d "$p" ] || mkdir -m 700 "$p"
+        done
+        t="$(mktemp "$d/.token.XXXXXX")"
+        cat > "$t"
+        mv -f "$t" "$d/$2"
+      ' sh "$TOKEN_DIR_REL" "$TOKEN_NAME" || die "could not store the token as ${AGENT_USER}"
       rm -f -- "$TOKEN_SRC"
     fi
     unset token
