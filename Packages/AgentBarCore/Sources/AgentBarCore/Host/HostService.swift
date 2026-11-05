@@ -160,6 +160,10 @@ public final class HostService: @unchecked Sendable {
             guard HostProtocol.isValidId(rid) else { send(.error(id: nil, rid: nil, message: "invalid rid"), via: w); return }
             do { try workspaces.create(name); send(.workspaceCreated(rid: rid, name: name), via: w) }
             catch { send(.error(id: nil, rid: rid, message: Self.describe(error)), via: w) }
+        case .tokenstatus(let rid):
+            guard HostProtocol.isValidId(rid) else { send(.error(id: nil, rid: nil, message: "invalid rid"), via: w); return }
+            let file = config.oauthTokenFile ?? config.home.appendingPathComponent(HostEnvironment.tokenFileRelativePath)
+            send(.tokenstatus(rid: rid, status: HostTokenStatus.inspect(file: file, uid: config.uid)), via: w)
         case .spawn(let req): spawn(req, writer: w)
         }
     }

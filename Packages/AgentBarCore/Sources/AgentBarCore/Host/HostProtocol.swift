@@ -111,6 +111,40 @@ public struct HostWorkspace: Codable, Sendable, Equatable {
     public init(name: String, mtime: Int) { self.name = name; self.mtime = mtime }
 }
 
+/// Metadata about the Claude OAuth token file in the agent's home. Never contains the content.
+public struct HostTokenStatus: Codable, Sendable, Equatable {
+    public var present: Bool
+    /// Permission bits (`st_mode & 0o7777`); nil when absent.
+    public var mode: Int?
+    /// File is owned by the host's uid, a regular file and not a symlink.
+    public var ownerOK: Bool
+    public var size: Int?
+    /// Size within the plausible range for a token file (`HostTokenStatus.plausibleSize`).
+    public var plausibleLength: Bool
+    /// Modification time, seconds since 1970.
+    public var mtime: Int?
+
+    public static let plausibleSize = 40...4096
+
+    public init(present: Bool, mode: Int? = nil, ownerOK: Bool = false, size: Int? = nil, plausibleLength: Bool = false, mtime: Int? = nil) {
+        self.present = present; self.mode = mode; self.ownerOK = ownerOK; self.size = size
+        self.plausibleLength = plausibleLength; self.mtime = mtime
+    }
+
+    /// Present, regular, owned, mode 0600 (no group/world bits) and plausible length.
+    public var isHealthy: Bool { present && ownerOK && plausibleLength && (mode ?? 0o777) & 0o177 == 0 }
+
+    /// `lstat` only: the file is never opened or read. Symlinks and non-regular files report `ownerOK == false`.
+    public static func inspect(file: URL, uid: uid_t) -> HostTokenStatus {
+        var st = stat()
+        guard lstat(file.path, &st) == 0 else { return HostTokenStatus(present: false) }
+        let regular = (st.st_mode & S_IFMT) == S_IFREG
+        let size = Int(st.st_size)
+        return HostTokenStatus(present: true, mode: Int(st.st_mode & 0o7777), ownerOK: regular && st.st_uid == uid, size: size,
+                               plausibleLength: regular && plausibleSize.contains(size), mtime: Int(st.st_mtimespec.tv_sec))
+    }
+}
+
 /// App -> host.
 public enum HostCommand: Sendable, Equatable {
     case spawn(HostSpawnRequest)
@@ -122,6 +156,8 @@ public enum HostCommand: Sendable, Equatable {
     case kill(id: String)
     case workspaces(rid: String)
     case mkworkspace(rid: String, name: String)
+    /// Metadata of the OAuth token file (present / mode / owner / size). Never the content.
+    case tokenstatus(rid: String)
     case ping
 }
 
@@ -135,6 +171,7 @@ public enum HostEvent: Sendable, Equatable {
     case exit(id: String, status: Int)
     case workspaces(rid: String, items: [HostWorkspace])
     case workspaceCreated(rid: String, name: String)
+    case tokenstatus(rid: String, status: HostTokenStatus)
     case pong
     /// Request-level error. `id`/`rid` identify what it answers (either may be nil for protocol errors).
     case error(id: String?, rid: String?, message: String)
@@ -158,6 +195,7 @@ extension HostCommand: Codable {
         case "kill": self = .kill(id: try c.decode(String.self, forKey: .id))
         case "workspaces": self = .workspaces(rid: try c.decode(String.self, forKey: .rid))
         case "mkworkspace": self = .mkworkspace(rid: try c.decode(String.self, forKey: .rid), name: try c.decode(String.self, forKey: .name))
+        case "tokenstatus": self = .tokenstatus(rid: try c.decode(String.self, forKey: .rid))
         case "ping": self = .ping
         case let other: throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "unknown op \(other)")
         }
@@ -177,6 +215,7 @@ extension HostCommand: Codable {
         case .workspaces(let rid): try c.encode("workspaces", forKey: .op); try c.encode(rid, forKey: .rid)
         case .mkworkspace(let rid, let name):
             try c.encode("mkworkspace", forKey: .op); try c.encode(rid, forKey: .rid); try c.encode(name, forKey: .name)
+        case .tokenstatus(let rid): try c.encode("tokenstatus", forKey: .op); try c.encode(rid, forKey: .rid)
         case .ping: try c.encode("ping", forKey: .op)
         }
     }
@@ -199,6 +238,8 @@ extension HostEvent: Codable {
         case "exit": self = .exit(id: try c.decode(String.self, forKey: .id), status: try c.decode(Int.self, forKey: .status))
         case "workspaces": self = .workspaces(rid: try c.decode(String.self, forKey: .rid), items: try c.decode([HostWorkspace].self, forKey: .items))
         case "workspaceCreated": self = .workspaceCreated(rid: try c.decode(String.self, forKey: .rid), name: try c.decode(String.self, forKey: .name))
+        case "tokenstatus":
+            self = .tokenstatus(rid: try c.decode(String.self, forKey: .rid), status: try c.decode(HostTokenStatus.self, forKey: .status))
         case "pong": self = .pong
         case "error":
             self = .error(id: try c.decodeIfPresent(String.self, forKey: .id), rid: try c.decodeIfPresent(String.self, forKey: .rid),
@@ -217,6 +258,7 @@ extension HostEvent: Codable {
         case .exit(let id, let s): try c.encode("exit", forKey: .ev); try c.encode(id, forKey: .id); try c.encode(s, forKey: .status)
         case .workspaces(let rid, let items): try c.encode("workspaces", forKey: .ev); try c.encode(rid, forKey: .rid); try c.encode(items, forKey: .items)
         case .workspaceCreated(let rid, let n): try c.encode("workspaceCreated", forKey: .ev); try c.encode(rid, forKey: .rid); try c.encode(n, forKey: .name)
+        case .tokenstatus(let rid, let st): try c.encode("tokenstatus", forKey: .ev); try c.encode(rid, forKey: .rid); try c.encode(st, forKey: .status)
         case .pong: try c.encode("pong", forKey: .ev)
         case .error(let id, let rid, let m):
             try c.encode("error", forKey: .ev); try c.encodeIfPresent(id, forKey: .id); try c.encodeIfPresent(rid, forKey: .rid); try c.encode(m, forKey: .error)

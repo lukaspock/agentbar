@@ -90,6 +90,16 @@ public final class HostClient: @unchecked Sendable {
         }
     }
 
+    /// Metadata of the agent's OAuth token file (never its content); the owner cannot read the agent home itself.
+    public func tokenStatus(completion: @escaping @Sendable (Result<HostTokenStatus, HostError>) -> Void) {
+        request({ .tokenstatus(rid: $0) }) { r in
+            completion(r.flatMap { ev in
+                if case .tokenstatus(_, let st) = ev { return .success(st) }
+                return .failure(.host("unexpected reply"))
+            })
+        }
+    }
+
     /// SIGTERM to every running agent process group (the "stop all" menu item). Does not wait.
     public func terminateAll() {
         lock.lock(); let ps = Array(procs.values); lock.unlock()
@@ -228,7 +238,7 @@ public final class HostClient: @unchecked Sendable {
         case .exit(let id, let status):
             guard let p = process(id) else { return dropped() }
             if p.hostExit(Int32(truncatingIfNeeded: status)) { forget(id) } else { dropped() }
-        case .workspaces(let rid, _), .workspaceCreated(let rid, _):
+        case .workspaces(let rid, _), .workspaceCreated(let rid, _), .tokenstatus(let rid, _):
             if let p = takePending(rid) { p.finish(.success(ev)) } else { dropped() }
         case .error(let id, let rid, let msg):
             if let rid, let p = takePending(rid) { p.finish(.failure(.host(msg))) }
