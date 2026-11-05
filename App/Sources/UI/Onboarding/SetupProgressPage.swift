@@ -21,16 +21,19 @@ struct SetupProgressPage: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            OnboardingHeader(title: "Setting things up", sentence: model.hasUnresolvedFailure
+            OnboardingHeader(title: "Setting things up", sentence: model.migrationOffer
+                             ? "An older agent account exists. Migrate it to continue."
+                             : model.hasUnresolvedFailure
                              ? "Something needs attention. Retry it or skip it for now."
                              : "This only takes a moment.") {
                 BlobView(state: heroState, kind: model.mascotKind, size: 44, tint: model.mascotColor, seed: "setup")
                     .frame(width: 54, height: 54)
             }
+            // Pinned above the list so it can never scroll out of sight.
+            if model.migrationOffer { migrationCard.padding(.horizontal, 28) }
             ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 10) {
-                    if model.migrationOffer { migrationCard }
                     ForEach(otherSteps.filter { before($0) }, id: \.self) { rowView($0) }
                     if !adminSteps.isEmpty { adminGroup }
                     ForEach(otherSteps.filter { !before($0) }, id: \.self) { rowView($0) }
