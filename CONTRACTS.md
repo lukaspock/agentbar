@@ -180,6 +180,7 @@ owner's `ChatSession`. NOT part of this phase: `hookplan`/`hookapply` (hooks thr
 agent role as for every op. Long-lived duplex connection; at most ONE host at a time (`host already connected`, a dead link is detected within 20 s).
 Handshake, host -> app, one line (`HostHello`):
 `{"token","op":"host","protocol":1,"user":"agentbar","uid":N,"workspaceRoot":"/Users/agentbar/work","agents":{"claude":"/path"}}`
+Agent account: `agentbar` is resolved by name (`getpwnam`), the UID is never hard-coded. A NEW account is a role account (UID 200..399, shell /usr/bin/false, hidden); an EXISTING account (e.g. uid 502) is adopted without changing its UniqueID and hardened best effort (decision 2026-11-07, see Docs/research/dscl-permission.md). The setup probe accepts uid >= 100, non-admin, with shell /usr/bin/false or no AuthenticationAuthority and password `*`/empty.
 => app replies `{"ok":true,"event":"ready","protocol":1,"maxLine":1048576}` (errors: `unsupported protocol`, `invalid hello`, `host already connected`).
 The host must not send frames before `ready`. `user`/`workspaceRoot`/`agents` are display data (control/format characters rejected, bounded); the
 identity is the kernel peer uid (`HostClient.Info.uid`). After `ready` both directions are `\n`-separated JSON frames, **max 1 MiB per line for this channel
