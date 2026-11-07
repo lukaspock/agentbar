@@ -194,6 +194,25 @@ final class ChatSessionTests: XCTestCase {
         XCTAssertEqual(session(store).state, .working)
     }
 
+    func testDenyWithReasonPassesBoundedSingleLineReason() throws {
+        let (s, store, fake) = make()
+        try s.start()
+        fake.emit(permission)
+        var req = session(store).pendingRequests[0]
+        store.respond(AgentResponse(requestId: req.requestId, optionId: "deny", text: "wrong dir\n\u{1B}[31m" + String(repeating: "x", count: 400)), sessionId: "c1")
+        var inner = (fake.written.last?["response"] as! [String: Any])["response"] as! [String: Any]
+        XCTAssertEqual(inner["behavior"] as? String, "deny")
+        let msg = inner["message"] as! String
+        XCTAssertTrue(msg.hasPrefix("The user denied this in AgentBar and wrote: wrong dir "))
+        XCTAssertFalse(msg.contains("\n") || msg.contains("\u{1B}"))
+        XCTAssertLessThanOrEqual(msg.count, 300)
+        fake.emit(permission)
+        req = session(store).pendingRequests[0]
+        store.respond(AgentResponse(requestId: req.requestId, optionId: "deny", text: "  "), sessionId: "c1")
+        inner = (fake.written.last?["response"] as! [String: Any])["response"] as! [String: Any]
+        XCTAssertEqual(inner["message"] as? String, "Denied by the user in AgentBar")
+    }
+
     func testAlwaysDenyTextAndTimeout() throws {
         let (s, store, fake) = make()
         try s.start()

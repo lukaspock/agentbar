@@ -18,8 +18,10 @@ public struct RequestOption: Codable, Sendable, Hashable, Identifiable {
     public var id: String            // approvals use "allow", "deny", "always"
     public var label: String
     public var style: Style
-    public init(id: String, label: String, style: Style = .normal) {
-        self.id = id; self.label = label; self.style = style
+    /// Optional one-line scope/consequence shown under the button (additive; e.g. where an "always" rule applies).
+    public var detail: String?
+    public init(id: String, label: String, style: Style = .normal, detail: String? = nil) {
+        self.id = id; self.label = label; self.style = style; self.detail = detail
     }
 }
 

@@ -20,6 +20,8 @@ struct LaunchOptions {
     var demoRename: String?       // --demo-rename <sessionId>: open the inline rename/color editor of that row
     var demoForkFail = false      // --demo-fork-fail: "Continue in panel" fails in the demo (error bubble screenshots)
     var demoForkAuto = false      // --demo-fork-auto: press "Continue in panel" by itself shortly after the panel appears (screenshots)
+    var demoBubbleAnswer: String? // --demo-bubble-answer <optionId[:reason]>: answer the approval bubble through its guarded path after ~1.6 s (screenshots)
+    var demoNoBubbleScroll = false // --demo-no-bubble-scroll: do not scroll the panel to the approval bubble (screenshot of the top)
     var demoAgentUser = false     // --demo-agent-user: show the inline "Agent user" status in the panel
     var demoSelect: String?       // --demo-select <sessionId>: start with this session selected (screenshots)
     var prefsFile: URL?           // --prefs-file <path>: personalization file instead of ~/Library/Application Support/AgentBar
@@ -48,6 +50,8 @@ struct LaunchOptions {
             case "--demo-flow-bot": demoFlowBot = next; i += 1
             case "--demo-flow-newname": demoFlowNewName = next; i += 1
             case "--demo-rename": demoRename = next; i += 1
+            case "--demo-bubble-answer": demoBubbleAnswer = next; i += 1
+            case "--demo-no-bubble-scroll": demoNoBubbleScroll = true
             case "--demo-agent-user": demoAgentUser = true
             case "--demo-fork-fail": demoForkFail = true
             case "--demo-fork-auto": demoForkAuto = true

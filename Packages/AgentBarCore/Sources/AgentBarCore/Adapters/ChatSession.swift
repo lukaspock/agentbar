@@ -214,7 +214,8 @@ public final class ChatSession {
         var options = [RequestOption(id: "allow", label: "Allow", style: .primary),
                        RequestOption(id: "deny", label: "Deny", style: .destructive)]
         let always = Self.safeAlwaysRule(tool: tool, input: input, suggestions: suggestions)
-        if let always { options.append(RequestOption(id: "always", label: "Always allow: " + always.label)) }
+        if let always { options.append(RequestOption(id: "always", label: "Always allow: " + always.label,
+                                                                 detail: ClaudeCodeAdapter.alwaysDetail(always.update))) }
         let chosen: [Any]? = always.map { [$0.update] }
         submit(cliRequestId: cliRequestId, tool: tool, input: input, kind: .approval(suggestion: chosen),
                type: .approval, text: text, options: options, timeout: Self.approvalTimeoutSeconds)
@@ -313,6 +314,10 @@ public final class ChatSession {
                 // A typed reply instead of a button: deny and hand the text to the agent as guidance.
                 let t = (response.text ?? "").capped(1000)
                 process.write(line: ChatWire.deny(requestId: rid, message: "The user declined and wrote: " + t))
+            case "deny"? where ClaudeCodeAdapter.clean(response.text, max: 200) != nil:
+                // Deny with a reason (bubble field): bounded, single line, control characters removed.
+                let t = ClaudeCodeAdapter.clean(response.text, max: 200) ?? ""
+                process.write(line: ChatWire.deny(requestId: rid, message: "The user denied this in AgentBar and wrote: " + t))
             default:
                 process.write(line: ChatWire.deny(requestId: rid, message: "Denied by the user in AgentBar"))
             }

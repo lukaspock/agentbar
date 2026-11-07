@@ -172,7 +172,8 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         var r = request
         r.text = r.text.capped(AgentBarLimits.maxTextLength)
         r.options = r.options.prefix(AgentBarLimits.maxOptions).map {
-            RequestOption(id: $0.id.capped(AgentBarLimits.maxIdLength), label: $0.label.capped(AgentBarLimits.maxNameLength), style: $0.style)
+            RequestOption(id: $0.id.capped(AgentBarLimits.maxIdLength), label: $0.label.capped(AgentBarLimits.maxNameLength), style: $0.style,
+                          detail: $0.detail?.capped(AgentBarLimits.maxNameLength * 2))
         }
         if let t = r.timeoutSeconds { r.timeoutSeconds = min(max(t, 0), AgentBarLimits.maxTimeoutSeconds) }
         endedAt[sessions[i].id] = nil
@@ -254,7 +255,9 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         switch response.reason {
         case .answered:
             let label = response.optionId.flatMap { o in req.options.first { $0.id == o }?.label } ?? response.text ?? ""
-            summary = "answered: \(label)"
+            // Deny with a reason: keep the reason (single line, bounded) so the transcript note can show it.
+            let reason = response.optionId != nil ? ApprovalTranscript.oneLine(response.text, max: 200) : nil
+            summary = "answered: \(label)" + (reason.map { ": " + $0 } ?? "")
         case .timeout: summary = "timeout" + (response.optionId.map { " (\($0))" } ?? "")
         case .cancelled: summary = "cancelled"
         }

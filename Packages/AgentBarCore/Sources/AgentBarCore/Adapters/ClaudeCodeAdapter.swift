@@ -114,20 +114,50 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         }
         let suggestions = (obj["permission_suggestions"] as? [Any]) ?? []
         var chosen: Data?
+        var alwaysDetail: String?
         if !suggestions.isEmpty {
             let local = suggestions.first { ($0 as? [String: Any])?["destination"] as? String == "localSettings" }
             let pick = local ?? suggestions[0]
             if JSONSerialization.isValidJSONObject(pick) { chosen = try? JSONSerialization.data(withJSONObject: pick, options: [.sortedKeys]) }
+            alwaysDetail = Self.alwaysDetail(pick)
         }
         var options = [RequestOption(id: "allow", label: "Allow", style: .primary),
                        RequestOption(id: "deny", label: "Deny", style: .destructive)]
-        if chosen != nil { options.append(RequestOption(id: "always", label: "Always allow")) }
+        if chosen != nil { options.append(RequestOption(id: "always", label: "Always allow", detail: alwaysDetail)) }
         let rid = UUID().uuidString
         remember(rid, Pending(suggestion: chosen))
         let req = AgentRequest(requestId: rid, type: .approval, text: text, options: options,
                                timeoutSeconds: Self.approvalTimeoutSeconds, defaultOptionId: nil)
         // name-only update first, so the card shows the project name instead of the raw session id
         return [update(nil, nil), .ask(sessionId: sid, request: req)]
+    }
+
+    /// Where an "always" rule would apply, from the chosen `permission_suggestions` entry (`destination`), plus the rule
+    /// itself when it is an `addRules` entry. Everything is sanitized (it is untrusted); nil when nothing is derivable.
+    static func alwaysDetail(_ suggestion: Any) -> String? {
+        guard let s = suggestion as? [String: Any] else { return nil }
+        let scope: String?
+        switch s["destination"] as? String {
+        case "session": scope = "this session only"
+        case "localSettings": scope = "this project, local settings"
+        case "projectSettings": scope = "this project, shared settings"
+        case "userSettings": scope = "all projects, user settings"
+        default: scope = nil
+        }
+        var what: String?
+        switch s["type"] as? String {
+        case "addRules":
+            if let rules = s["rules"] as? [[String: Any]], let r = rules.first, let tool = r["toolName"] as? String {
+                let rule = (r["ruleContent"] as? String).map { "\(tool)(\($0))" } ?? tool
+                let more = rules.count > 1 ? " +\(rules.count - 1) more" : ""
+                what = clean(rule, max: 60).map { $0 + more }
+            }
+        case "setMode": what = clean((s["mode"] as? String).map { "mode \($0)" }, max: 40)
+        case "addDirectories": what = "adds directories"
+        default: break
+        }
+        let parts = [what, scope].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Plain-text approval body: header line (tool, project), `cwd:` line, then one `key: value` entry per top-level

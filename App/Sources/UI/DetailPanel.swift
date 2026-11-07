@@ -1,6 +1,8 @@
 import SwiftUI
 import AgentBarCore
 
+private let approvalBubbleAnchor = "approval-bubble"
+
 private struct HeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
@@ -36,9 +38,18 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
     @ObservedObject private var router = PanelRouter.shared
     @ObservedObject private var prefs = PreferencesHub.shared
 
-    /// One card per session (its oldest request), ordered oldest request first; independent of session state.
-    private var openRequests: [(sessionId: String, request: AgentRequest)] {
-        RequestOrdering.stable(store.sessions.compactMap { s in s.pendingRequests.first.map { (s.id, $0) } })
+    /// One entry per session (its oldest request), ordered oldest request first; independent of session state.
+    /// The request of the SELECTED session whose conversation is visible is a bubble in that conversation, all others are
+    /// cards on top. Every open request is shown exactly once; the order (and so the queue logic) is the same either way.
+    private var placement: [RequestPlacement.Item] {
+        RequestPlacement.place(sessions: store.sessions, bubbleSessionId: bubbleSessionId)
+    }
+
+    /// The conversation of the selected session is on screen (no other page open, transcript panel present).
+    private var bubbleSessionId: String? {
+        guard router.page == nil, let s = selected else { return nil }
+        let shown = (hub.supportsChat(s) && hub.backend != nil) || !s.history.isEmpty
+        return shown ? s.id : nil
     }
 
     private var selected: AgentSession? {
@@ -46,29 +57,58 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            content
-                .background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
-        }
-        .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
-        .onAppear { guardModel.observe(order: openRequests.map(\.request.requestId)); guardModel.layoutChanged() }
-        .onChange(of: openRequests.map(\.request.requestId)) { _, ids in guardModel.observe(order: ids) }
-        .onChange(of: contentHeight) { _, _ in guardModel.layoutChanged(); router.flow?.lock() }
-        .onChange(of: router.page) { _, _ in guardModel.layoutChanged() }
-        .onAppear { router.onSessionStarted = { id in withAnimation(BarTheme.spring) { model.selectedSessionId = id } } }
-        .onChange(of: model.expanded) { _, _ in
-            // Opened by a new request (not by the user): keep the buttons locked longer, the pointer may rest anywhere.
-            let auto = model.lastAutoExpand.map { Date().timeIntervalSince($0) < 0.5 } ?? false
-            guardModel.layoutChanged(extra: auto ? 1.2 : 0.2)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                content
+                    .background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
+            }
+            .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
+            .onAppear {
+                guardModel.observe(order: placement.map(\.guardKey)); guardModel.layoutChanged()
+                if placement.contains(where: { $0.inBubble }), !LaunchOptions.current.demoNoBubbleScroll {
+                    DispatchQueue.main.async { proxy.scrollTo(approvalBubbleAnchor, anchor: .bottom) }
+                }
+            }
+            .onChange(of: placement.map(\.guardKey)) { _, keys in guardModel.observe(order: keys) }
+            // A bubble sits at the end of a possibly tall panel: bring it into view when it appears (the click guard
+            // restarts its settle window at the same moment, see `RequestPlacement.Item.guardKey`).
+            .onChange(of: placement.first { $0.inBubble }?.guardKey) { _, key in
+                guard key != nil, !LaunchOptions.current.demoNoBubbleScroll else { return }
+                DispatchQueue.main.async { withAnimation(BarTheme.spring) { proxy.scrollTo(approvalBubbleAnchor, anchor: .bottom) } }
+            }
+            .onChange(of: contentHeight) { _, _ in guardModel.layoutChanged(); router.flow?.lock() }
+            .onChange(of: router.page) { _, _ in guardModel.layoutChanged() }
+            .onAppear { router.onSessionStarted = { id in withAnimation(BarTheme.spring) { model.selectedSessionId = id } } }
+            .onChange(of: model.expanded) { _, _ in
+                // Opened by a new request (not by the user): keep the buttons locked longer, the pointer may rest anywhere.
+                let auto = model.lastAutoExpand.map { Date().timeIntervalSince($0) < 0.5 } ?? false
+                guardModel.layoutChanged(extra: auto ? 1.2 : 0.2)
+            }
         }
         .frame(width: model.layout.expandedWidth)
     }
 
     /// Click-time check, evaluated against the live store, not against what was rendered.
-    private func canAnswer(requestId: String, sessionId: String) -> Bool {
+    /// `key` is the guard key the view was rendered with: if the request moved (card <-> bubble) since, the answer is refused.
+    private func canAnswer(key: String, requestId: String, sessionId: String) -> Bool {
         guard store.sessions.first(where: { $0.id == sessionId })?.pendingRequests.contains(where: { $0.requestId == requestId }) == true
         else { return false }
-        return guardModel.isArmed(requestId, currentOrder: openRequests.map(\.request.requestId))
+        let now = placement
+        guard let live = now.first(where: { $0.request.requestId == requestId && $0.sessionId == sessionId }), live.guardKey == key
+        else { return false }
+        return guardModel.isArmed(key, currentOrder: now.map(\.guardKey))
+    }
+
+    /// The bubble of the selected session's conversation, if it has one.
+    private func bubbleRequest(for session: AgentSession) -> BubbleRequest? {
+        let all = placement
+        guard let item = all.first(where: { $0.inBubble && $0.sessionId == session.id }) else { return nil }
+        let _ = guardModel.epoch   // re-render when a settle window ends
+        let key = item.guardKey, rid = item.request.requestId, sid = item.sessionId
+        return BubbleRequest(request: item.request, extra: item.extra,
+                             armed: guardModel.isArmed(key, currentOrder: all.map(\.guardKey)),
+                             canAnswer: { canAnswer(key: key, requestId: rid, sessionId: sid) },
+                             respond: { store.respond($0, sessionId: sid) })
     }
 
     private var content: some View {
@@ -94,15 +134,15 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
 
     /// Approvals stay on top of every page: a request must never hide behind the New session flow.
     @ViewBuilder private var requestCards: some View {
-        let open = openRequests
-        let order = open.map(\.request.requestId)
+        let open = placement
+        let order = open.map(\.guardKey)
         let _ = guardModel.epoch   // re-render when a settle window ends
-        ForEach(open, id: \.request.requestId) { item in
+        ForEach(open.filter { !$0.inBubble }, id: \.request.requestId) { item in
             if let session = store.sessions.first(where: { $0.id == item.sessionId }) {
                 RequestCard(session: session, look: SessionLook.resolve(session, store: prefs.store),
-                            request: item.request, extra: session.pendingRequests.count - 1,
-                            armed: guardModel.isArmed(item.request.requestId, currentOrder: order),
-                            canAnswer: { canAnswer(requestId: item.request.requestId, sessionId: item.sessionId) },
+                            request: item.request, extra: item.extra,
+                            armed: guardModel.isArmed(item.guardKey, currentOrder: order),
+                            canAnswer: { canAnswer(key: item.guardKey, requestId: item.request.requestId, sessionId: item.sessionId) },
                             sink: store, model: model)
             }
         }
@@ -145,9 +185,9 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
         if let selected {
             if hub.supportsChat(selected), let backend = hub.backend {
                 ChatPanel(session: selected, look: SessionLook.resolve(selected, store: prefs.store),
-                          backend: backend, sink: store, model: model)
+                          backend: backend, sink: store, bubble: bubbleRequest(for: selected), model: model)
             } else if !selected.history.isEmpty {
-                HookConversationPanel(session: selected, backend: hub.backend, model: model)
+                HookConversationPanel(session: selected, backend: hub.backend, bubble: bubbleRequest(for: selected), model: model)
             }
         }
         if selected == nil, hub.backend != nil {
@@ -275,7 +315,7 @@ private struct BodyHeightKey: PreferenceKey {
 
 /// Approval text: first line is the headline, the rest (cwd, `key: value` lines) is monospaced and scrollable.
 /// Shows the complete text; only the visible window is height-limited.
-private struct ApprovalBody: View {
+struct ApprovalBody: View {
     let text: String
     @State private var bodyHeight: CGFloat = 0
     private let maxHeight: CGFloat = 170
@@ -528,6 +568,7 @@ private struct GroupHeader: View {
 private struct HookConversationPanel: View {
     let session: AgentSession
     let backend: ChatBackend?
+    let bubble: BubbleRequest?
     @ObservedObject var model: BarViewModel
     @State private var starting = false
 
@@ -541,7 +582,8 @@ private struct HookConversationPanel: View {
                 Spacer()
                 Text("\(session.history.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.white.opacity(0.3))
             }
-            ConversationTranscript(history: session.history, maxHeight: 150)
+            ConversationTranscript(history: ApprovalTranscript.display(history: session.history, bubble: bubble?.request), maxHeight: bubble == nil ? 150 : 70)
+            if let bubble { ApprovalBubble(bubble: bubble, model: model).id(approvalBubbleAnchor) }
             HStack(spacing: 5) {
                 Image(systemName: "terminal").font(.system(size: 9))
                 Text("Reply in the terminal").font(.system(size: 10))
@@ -636,6 +678,7 @@ private struct ChatPanel<Sink: ResponseSink>: View {
     let look: SessionLook
     let backend: ChatBackend
     let sink: Sink
+    let bubble: BubbleRequest?
     @ObservedObject var model: BarViewModel
     @State private var draft = ""
     @State private var fieldKey = 0
@@ -655,7 +698,8 @@ private struct ChatPanel<Sink: ResponseSink>: View {
                 Spacer()
                 if busy { Text("working…").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)) }
             }
-            ConversationTranscript(history: session.history, maxHeight: 110)
+            ConversationTranscript(history: ApprovalTranscript.display(history: session.history, bubble: bubble?.request), maxHeight: bubble == nil ? 110 : 70)
+            if let bubble { ApprovalBubble(bubble: bubble, model: model).id(approvalBubbleAnchor) }
             HStack(spacing: 8) {
                 ReplyField(placeholder: "Message to agent, Enter to send",
                            onEditing: { model.setEditing($0) },

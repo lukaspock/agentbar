@@ -135,6 +135,35 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                                  currentAction: "Clicking the \"Submit\" button in Safari", supportsStop: true),
                     AgentSession(id: "b", name: "api-server", kind: .codex, state: .idle)]
             if name == "hook" { list = list.filter { $0.id == "hook1" || $0.id == "b" } }   // short list: panel fits the screenshot
+        case "approval", "approval2":
+            // Open approval in the (selected) hook session `hook1`, shown as a bubble in its conversation (use --demo-select hook1).
+            // "approval2" has a second waiting session: its request stays a card on top.
+            let cmd = "cd /Users/demo/Projects/notchy-app && swift test --filter NotchWindowTests 2>&1 | tail -40 && git status --short"
+            let text = "Allow Bash?\ncwd: /Users/demo/Projects/notchy-app\ncommand: \(cmd)\ndescription: Run the window tests, then show the changed files"
+            let bubbleReq = AgentRequest(requestId: "ab1", type: .approval, text: text,
+                options: [RequestOption(id: "allow", label: "Allow", style: .primary),
+                          RequestOption(id: "deny", label: "Deny", style: .destructive),
+                          RequestOption(id: "always", label: "Always allow", detail: "Bash(swift test:*) · this project, local settings")],
+                timeoutSeconds: 120, defaultOptionId: nil)
+            var hook = AgentSession(id: "hook1", name: "notchy-app", kind: .claudeCode, state: .needsInput, pendingRequests: [bubbleReq], history: [
+                h(400, .status, "Session started"),
+                h(300, .answer, "You: Why does the notch flicker when a second display is attached?"),
+                h(280, .action, "Read NotchWindow.swift"),
+                h(200, .status, "Claude: The panel frame is recomputed on every screen change; I would debounce it."),
+                h(120, .answer, "You: Go ahead and fix it, then run the tests."),
+                h(60, .action, "Edited NotchWindow.swift"),
+                h(20, .request, text)], workingDirectory: "/Users/demo/Projects/notchy-app", originRole: .owner)
+            hook.updatedAt = now
+            list = [hook, AgentSession(id: "b", name: "api-server", kind: .codex, state: .idle)]
+            if name == "approval2" {
+                let other = AgentRequest(requestId: "ab2", type: .approval,
+                    text: "Allow Edit?\ncwd: /Users/demo/Projects/api-server\nfile_path: /Users/demo/Projects/api-server/Sources/Routes.swift",
+                    options: [RequestOption(id: "allow", label: "Allow", style: .primary),
+                              RequestOption(id: "deny", label: "Deny", style: .destructive)],
+                    timeoutSeconds: 120, defaultOptionId: nil, createdAt: now.addingTimeInterval(-20))
+                list[1] = AgentSession(id: "b", name: "api-server", kind: .codex, state: .needsInput, pendingRequests: [other],
+                                       history: [h(30, .request, other.text)])
+            }
         case "error":
             list = [AgentSession(id: "c", name: "deploy.sh", kind: .genericCLI, state: .error,
                                  history: [h(60, .action, "Uploading build"), h(5, .error, "Exit code 1: connection refused")]),
@@ -162,9 +191,13 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
     func respond(_ response: AgentResponse, sessionId: String) {
         guard let i = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         var s = sessions[i]
+        let answered = s.pendingRequests.first { $0.requestId == response.requestId }
         s.pendingRequests.removeAll { $0.requestId == response.requestId }
-        let label = response.text ?? response.optionId ?? "dismissed"
-        s.history.append(HistoryEntry(kind: .answer, text: "Answered: \(label)"))
+        // Same wording as the real store: "answered: <option label>[: reason]" (the transcript turns it into "Allowed"/"Denied: ...").
+        let optLabel = response.optionId.flatMap { o in answered?.options.first { $0.id == o }?.label }
+        let reason = response.optionId != nil ? ApprovalTranscript.oneLine(response.text, max: 200) : nil
+        let label = optLabel ?? response.text ?? response.optionId ?? "dismissed"
+        s.history.append(HistoryEntry(kind: .answer, text: "answered: \(label)" + (reason.map { ": " + $0 } ?? "")))
         s.state = s.pendingRequests.isEmpty ? .working : .needsInput
         s.updatedAt = Date()
         sessions[i] = s
