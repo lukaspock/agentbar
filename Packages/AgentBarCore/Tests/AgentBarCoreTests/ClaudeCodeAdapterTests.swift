@@ -104,10 +104,10 @@ final class ClaudeCodeAdapterTests: XCTestCase {
     }
 
     /// no ask => the transport answers with empty output => Claude Code shows its own dialog
-    func assertAttentionOnly(_ ev: [CoreEvent], suffix: String? = "[gekürzt, im Terminal prüfen]", file: StaticString = #filePath, line: UInt = #line) {
+    func assertAttentionOnly(_ ev: [CoreEvent], suffix: String? = "[truncated, check in terminal]", file: StaticString = #filePath, line: UInt = #line) {
         guard case let .sessionUpdate(_, _, _, state, action, _) = ev.first else { return XCTFail("no update", file: file, line: line) }
         XCTAssertEqual(state, .needsInput, file: file, line: line)
-        XCTAssertTrue(action?.hasSuffix("[gekürzt, im Terminal prüfen]") ?? false, action ?? "nil", file: file, line: line)
+        XCTAssertTrue(action?.hasSuffix("[truncated, check in terminal]") ?? false, action ?? "nil", file: file, line: line)
         XCTAssertFalse((action ?? "").contains("ZZZ"), file: file, line: line)
     }
 
@@ -192,7 +192,7 @@ final class ClaudeCodeAdapterTests: XCTestCase {
             let ev = try a.translate(payload: payload(p))
             XCTAssertNil(ask(ev), "must fail closed: \(bad.unicodeScalars.count) scalars")
             guard case let .sessionUpdate(_, _, _, st, act, _) = ev.first else { return XCTFail() }
-            XCTAssertEqual(st, .needsInput); XCTAssertTrue(act?.contains("unlesbare Zeichen") ?? false, act ?? "")
+            XCTAssertEqual(st, .needsInput); XCTAssertTrue(act?.contains("unreadable characters") ?? false, act ?? "")
         }
         // nested value, key, tool name, cwd
         XCTAssertNil(try offered(["a": "r" + marks5]))

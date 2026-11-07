@@ -228,7 +228,7 @@ final class ChatSessionTests: XCTestCase {
         XCTAssertTrue(session(store).pendingRequests.isEmpty, "no one-click allow when the input cannot be shown in full")
         let inner = (fake.written.last?["response"] as! [String: Any])["response"] as! [String: Any]
         XCTAssertEqual(inner["behavior"] as? String, "deny")
-        XCTAssertTrue(session(store).currentAction?.contains("gekürzt") == true)
+        XCTAssertTrue(session(store).currentAction?.contains("truncated") == true)
         // empty input is not renderable either
         fake.emit(#"{"type":"control_request","request_id":"r10","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":"t"}}"#)
         XCTAssertTrue(session(store).pendingRequests.isEmpty)

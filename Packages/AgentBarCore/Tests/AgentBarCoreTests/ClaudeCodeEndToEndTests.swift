@@ -144,7 +144,7 @@ final class ClaudeCodeEndToEndTests: XCTestCase {
             let s = try XCTUnwrap(store.sessions.first { $0.id == "e2e-1" })
             XCTAssertTrue(s.pendingRequests.isEmpty)
             XCTAssertEqual(s.state, .needsInput)
-            XCTAssertTrue(s.currentAction?.contains("gekürzt, im Terminal prüfen") ?? false)
+            XCTAssertTrue(s.currentAction?.contains("truncated, check in terminal") ?? false)
             XCTAssertFalse(s.history.contains { $0.kind == .request })
         }
         // sanity: a displayable input is still answered

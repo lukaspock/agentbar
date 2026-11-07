@@ -79,7 +79,7 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
 
     /// Max characters of an approval text. Stays below `AgentBarLimits.maxTextLength` so the store never cuts it.
     public static let maxApprovalText = AgentBarLimits.maxTextLength - 100
-    public static let truncationMarker = "… [gekürzt, im Terminal prüfen]"
+    public static let truncationMarker = "… [truncated, check in terminal]"
 
     private func permissionAsk(_ obj: [String: Any], sid: String, name: String, update: (SessionState?, String?) -> CoreEvent) -> [CoreEvent] {
         let rendered = Self.renderApproval(tool: obj["tool_name"] as? String, cwd: obj["cwd"] as? String,
@@ -116,12 +116,12 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
     static func renderApproval(tool: String?, cwd: String?, project: String, input: Any?)
         -> (text: String?, reason: String) {
         let limit = maxApprovalText
-        let unreadable = "unlesbare Zeichen"
+        let unreadable = "unreadable characters"
         if hasCollapsedCluster(tool ?? "") || hasCollapsedCluster(project) || hasCollapsedCluster(cwd ?? "") { return (nil, unreadable) }
         let toolRaw = singleLine(tool ?? "")
-        guard !toolRaw.isEmpty else { return (nil, "unbekanntes Tool") }
-        guard toolRaw.count <= 60 else { return (nil, "Toolname zu lang") }
-        guard let dict = input as? [String: Any], !dict.isEmpty else { return (nil, "keine Parameter darstellbar") }
+        guard !toolRaw.isEmpty else { return (nil, "unknown tool") }
+        guard toolRaw.count <= 60 else { return (nil, "tool name too long") }
+        guard let dict = input as? [String: Any], !dict.isEmpty else { return (nil, "no displayable parameters") }
         var lines = ["Allow \(toolRaw)? Project: \(singleLine(project))"]
         if let cwd, !singleLine(cwd).isEmpty { lines.append("cwd: \(singleLine(cwd))") }
         // Counted in Characters (what the store caps) AND in unicode scalars (a single grapheme can carry thousands).
@@ -131,12 +131,12 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
             let rawValue = valueString(dict[key])
             if hasCollapsedCluster(key) || hasCollapsedCluster(rawValue) { return (nil, unreadable) }
             let k = singleLine(key)
-            guard !k.isEmpty, k.count <= 60 else { return (nil, "Parametername nicht darstellbar") }
+            guard !k.isEmpty, k.count <= 60 else { return (nil, "parameter name not displayable") }
             var v = multiLine(rawValue)
-            if v.isEmpty { v = "(leer)" }
+            if v.isEmpty { v = "(empty)" }
             let entry = "\(k): " + v.replacingOccurrences(of: "\n", with: "\n  ")
             total += size(entry) + 1
-            if total > limit { return (nil, "Eingabe zu lang") }
+            if total > limit { return (nil, "input too long") }
             lines.append(entry)
         }
         return (lines.joined(separator: "\n"), "")

@@ -10,7 +10,7 @@ final class CodexHookSetupMenu: NSObject {
     static let menuItemFactory: () -> NSMenuItem = { CodexHookSetupMenu.makeMenuItem() }
 
     static func makeMenuItem() -> NSMenuItem {
-        let item = NSMenuItem(title: "Codex-Hooks einrichten…", action: #selector(CodexHookSetupMenu.run), keyEquivalent: "")
+        let item = NSMenuItem(title: "Set Up Codex Hooks…", action: #selector(CodexHookSetupMenu.run), keyEquivalent: "")
         item.target = shared
         return item
     }
@@ -22,8 +22,8 @@ final class CodexHookSetupMenu: NSObject {
 
     @objc func run() {
         guard let cli = cliPath else {
-            info("agentbar-CLI nicht gefunden",
-                 "Das Kommandozeilenprogramm „agentbar“ liegt weder neben der App noch in deren Resources. Es wird für die Hooks benötigt.")
+            info("agentbar CLI not found",
+                 "The “agentbar” command-line tool is neither next to the app nor in its Resources. It is required for the hooks.")
             return
         }
         let setup = CodexHookSetup(agentbarPath: cli)
@@ -31,30 +31,30 @@ final class CodexHookSetupMenu: NSObject {
             let plan = try setup.planInstall()
             if plan.isNoOp {
                 // Already installed: offer removal instead.
-                let r = present(title: "Hooks sind bereits eingerichtet", preview: plan.preview,
-                                buttons: ["Schließen", "Entfernen…"])
+                let r = present(title: "Hooks are already set up", preview: plan.preview,
+                                buttons: ["Close", "Remove…"])
                 if r == .alertSecondButtonReturn { uninstall(setup) }
                 return
             }
-            let r = present(title: "Codex-Hooks einrichten? (UNVERIFIED)", preview: plan.preview + "\nNeue Codex-Sitzungen starten; Codex verlangt danach, die Hooks in /hooks zu bestätigen (trust). Vor dem Schreiben wird ein Backup angelegt.",
-                            buttons: ["Abbrechen", "Einrichten"])
+            let r = present(title: "Set up Codex hooks? (UNVERIFIED)", preview: plan.preview + "\nStart new Codex sessions; Codex then asks you to confirm the hooks in /hooks (trust). A backup is created before writing.",
+                            buttons: ["Cancel", "Set Up"])
             guard r == .alertSecondButtonReturn else { return }
             try finish(setup.apply(plan, confirm: { _ in true }))
-        } catch { info("Hooks konnten nicht eingerichtet werden", "\(error)") }
+        } catch { info("Hooks could not be set up", "\(error)") }
     }
 
     private func uninstall(_ setup: CodexHookSetup) {
         do {
             let plan = try setup.planUninstall()
-            let r = present(title: "AgentBar-Hooks entfernen?", preview: plan.preview, buttons: ["Abbrechen", "Entfernen"])
+            let r = present(title: "AgentBar-Remove hooks?", preview: plan.preview, buttons: ["Cancel", "Remove"])
             guard r == .alertSecondButtonReturn else { return }
             try finish(setup.apply(plan, confirm: { _ in true }))
-        } catch { info("Hooks konnten nicht entfernt werden", "\(error)") }
+        } catch { info("Hooks could not be removed", "\(error)") }
     }
 
     private func finish(_ outcome: HookSetup.Outcome) {
         if case let .applied(backup) = outcome {
-            info("Fertig", backup.map { "Backup: \($0.path)" } ?? "Neue Datei angelegt.")
+            info("Done", backup.map { "Backup: \($0.path)" } ?? "New file created.")
         }
     }
 
@@ -62,7 +62,7 @@ final class CodexHookSetupMenu: NSObject {
     private func present(title: String, preview: String, buttons: [String]) -> NSApplication.ModalResponse {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "Prüfe die Änderung an ~/.codex/hooks.json:"
+        alert.informativeText = "Review the change to ~/.codex/hooks.json:"
         buttons.forEach { alert.addButton(withTitle: $0) }
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 300))
         scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
