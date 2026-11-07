@@ -297,7 +297,9 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         let stop = try state("Stop", extra: ["last_assistant_message": "All done.\n\nBye"])
         XCTAssertEqual(stop.count, 2)
         if case let .sessionUpdate(_, _, _, st, _, _) = stop[0] { XCTAssertEqual(st, .done) } else { XCTFail() }
-        if case let .log(_, e) = stop[1] { XCTAssertEqual(e.text, "All done. Bye") } else { XCTFail() }
+        if case let .log(_, e) = stop[1] { XCTAssertEqual(e.text, "Claude: All done. Bye"); XCTAssertEqual(ChatLine.parse(e), .agent("All done. Bye")) } else { XCTFail() }
+        // no message => plain note, not an agent bubble
+        if case let .log(_, e) = try state("Stop")[1] { XCTAssertEqual(ChatLine.parse(e), .note("Finished")) } else { XCTFail() }
         let sub = try state("SubagentStop", extra: ["agent_id": "a1"])
         XCTAssertEqual(sub.count, 1)
         if case .log = sub[0] {} else { XCTFail("subagent stop must not change session state") }
@@ -305,6 +307,35 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         if case let .sessionUpdate(_, _, _, st, _, _) = n[0] { XCTAssertEqual(st, .needsInput) } else { XCTFail() }
         let n2 = try state("Notification", extra: ["message": "Signed in", "notification_type": "auth_success"])
         XCTAssertEqual(n2.count, 1)
+    }
+
+    func testUserPromptSubmitLogsPromptAsUserBubble() throws {
+        func ev(_ extra: [String: Any]) throws -> [CoreEvent] {
+            try a.translate(payload: payload(base("UserPromptSubmit").merging(extra) { $1 }))
+        }
+        let withPrompt = try ev(["prompt": "  fix the\u{1B}[31m build\n\nplease "])
+        XCTAssertEqual(withPrompt.count, 2)
+        guard case let .log(sid, e) = withPrompt[1] else { return XCTFail() }
+        XCTAssertEqual(sid, "s-1"); XCTAssertEqual(e.kind, .answer)
+        XCTAssertFalse(e.text.unicodeScalars.contains { $0.value < 0x20 })
+        XCTAssertEqual(ChatLine.parse(e), .user(String(e.text.dropFirst(5))))
+        XCTAssertTrue(e.text.hasPrefix("You: fix the"))
+        // long prompt is capped far below the store limit
+        guard case let .log(_, long) = try ev(["prompt": String(repeating: "x", count: 5000)])[1] else { return XCTFail() }
+        XCTAssertLessThanOrEqual(long.text.count, 5 + 300)
+        // no / empty / non-string prompt => state update only
+        XCTAssertEqual(try ev([:]).count, 1)
+        XCTAssertEqual(try ev(["prompt": "   "]).count, 1)
+        XCTAssertEqual(try ev(["prompt": 42]).count, 1)
+    }
+
+    func testNotificationAndSubagentStayNotes() throws {
+        let n = try a.translate(payload: payload(base("Notification")))
+        guard case let .log(_, e) = n.last! else { return XCTFail() }
+        XCTAssertEqual(ChatLine.parse(e), .note("Claude needs your attention"))
+        let sub = try a.translate(payload: payload(base("SubagentStop").merging(["last_assistant_message": "done"]) { $1 }))
+        guard case let .log(_, s) = sub[0] else { return XCTFail() }
+        XCTAssertEqual(ChatLine.parse(s), .note("Subagent: done"))
     }
 
     func testSessionNameFallback() throws {

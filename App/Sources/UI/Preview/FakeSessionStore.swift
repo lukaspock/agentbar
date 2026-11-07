@@ -113,7 +113,7 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                     MainActor.assumeIsolated { self?.remove(sessionId: "a") }
                 }
             }
-        case "chat":
+        case "chat", "hook":
             let chat = [h(200, .status, "Chat started in ~/Projects/agentbar"),
                         h(150, .answer, "You: Which targets does the project define?"),
                         h(140, .action, "Read project.yml"),
@@ -123,9 +123,18 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                         h(10, .error, "Tool call denied: rm -rf")]
             list = [AgentSession(id: "chat1", name: "agentbar", kind: .claudeCode, state: .working,
                                  currentAction: "Editing DetailPanel.swift", history: chat, supportsStop: true),
+                    AgentSession(id: "hook1", name: "notchy-app", kind: .claudeCode, state: .working, history: [
+                        h(400, .status, "Session started"),
+                        h(300, .answer, "You: Why does the notch flicker when a second display is attached?"),
+                        h(280, .action, "Read NotchWindow.swift"),
+                        h(200, .status, "Claude: The panel frame is recomputed on every screen change; I would debounce it."),
+                        h(120, .answer, "You: Go ahead and fix it, then run the tests."),
+                        h(60, .action, "Edited NotchWindow.swift"),
+                        h(20, .status, "Claude needs your attention")]),
                     AgentSession(id: "m", name: "Browser Agent", kind: .computerUse, state: .working,
                                  currentAction: "Clicking the \"Submit\" button in Safari", supportsStop: true),
                     AgentSession(id: "b", name: "api-server", kind: .codex, state: .idle)]
+            if name == "hook" { list = list.filter { $0.id == "hook1" || $0.id == "b" } }   // short list: panel fits the screenshot
         case "error":
             list = [AgentSession(id: "c", name: "deploy.sh", kind: .genericCLI, state: .error,
                                  history: [h(60, .action, "Uploading build"), h(5, .error, "Exit code 1: connection refused")]),

@@ -37,22 +37,6 @@ final class ChatHub: ObservableObject {
     func supportsChat(_ session: AgentSession) -> Bool { backend?.supportsChat(sessionId: session.id) ?? false }
 }
 
-/// Message split of the history convention: "You: ..." = user message, "Claude: ..." (status) = agent text,
-/// errors = error bubble, everything else = small dimmed side note.
-enum ChatLine {
-    case user(String)
-    case agent(String)
-    case error(String)
-    case note(String)
-
-    static func parse(_ e: HistoryEntry) -> ChatLine {
-        if e.kind == .answer, e.text.hasPrefix("You: ") { return .user(String(e.text.dropFirst(5))) }
-        if e.kind == .error { return .error(e.text) }
-        if e.kind == .status, e.text.hasPrefix("Claude: ") { return .agent(String(e.text.dropFirst(8))) }
-        return .note(e.text)
-    }
-}
-
 /// Scripted chat for `--demo`: logs the user message, answers after a moment.
 @MainActor
 final class FakeChatBackend: ChatBackend {

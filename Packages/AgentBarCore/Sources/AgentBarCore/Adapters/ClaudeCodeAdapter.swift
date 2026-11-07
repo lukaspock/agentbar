@@ -15,6 +15,9 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
 
     public static let maxPayloadBytes = 256 * 1024
     public static let approvalTimeoutSeconds = 120
+    /// Max characters of a logged user prompt / assistant reply (chat bubbles). Far below `AgentBarLimits.maxTextLength`.
+    static let maxPromptLog = 300
+    static let maxReplyLog = 400
     static let maxPendingTable = 256
 
     public enum AdapterError: Error, Equatable { case malformed(String) }
@@ -53,7 +56,12 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         case "SessionEnd":
             return [.sessionEnd(id: sid)]
         case "UserPromptSubmit":
-            return [update(.working, action: "Thinking")]
+            // The user's prompt becomes a chat bubble ("You: ..."); no prompt field => nothing is logged.
+            var events = [update(.working, action: "Thinking")]
+            if let prompt = Self.clean(obj["prompt"] as? String, max: Self.maxPromptLog) {
+                events.append(.log(sessionId: sid, entry: HistoryEntry(kind: .answer, text: "You: " + prompt)))
+            }
+            return events
         case "PreToolUse":
             let tool = Self.clean(obj["tool_name"] as? String, max: 60) ?? "tool"
             let summary = Self.summarize(tool: tool, input: obj["tool_input"])
@@ -67,7 +75,9 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
             }
             return [entry]
         case "Stop":
-            let last = Self.clean(obj["last_assistant_message"] as? String, max: 200) ?? "Finished"
+            // With a real assistant message the entry carries the "Claude: " agent prefix (shown as an agent bubble,
+            // same convention as chat sessions); the "Finished" fallback stays a plain note.
+            let last = Self.clean(obj["last_assistant_message"] as? String, max: Self.maxReplyLog).map { "Claude: " + $0 } ?? "Finished"
             return [update(.done), .log(sessionId: sid, entry: HistoryEntry(kind: .status, text: last))]
         case "SubagentStop":
             let last = Self.clean(obj["last_assistant_message"] as? String, max: 200) ?? "Subagent finished"

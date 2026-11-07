@@ -147,7 +147,7 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                 ChatPanel(session: selected, look: SessionLook.resolve(selected, store: prefs.store),
                           backend: backend, sink: store, model: model)
             } else if !selected.history.isEmpty {
-                HistoryList(session: selected)
+                HookConversationPanel(session: selected)
             }
         }
         if selected == nil, hub.backend != nil {
@@ -523,57 +523,27 @@ private struct GroupHeader: View {
     }
 }
 
-private struct HistoryHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
-/// Complete history of the selected session (store keeps max 50), newest first, in a scrollable window with times.
-private struct HistoryList: View {
+/// Conversation of a session that is only observed through hooks (terminal): same bubbles as a chat session,
+/// but no input. Replying happens in the terminal, so only a quiet hint is shown.
+private struct HookConversationPanel: View {
     let session: AgentSession
-    @State private var listHeight: CGFloat = 0
-    private let maxHeight: CGFloat = 150
-
-    private var entries: [HistoryEntry] { Array(session.history.reversed()) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("History · \(session.name)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                Text("Conversation · \(session.name)").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                    .lineLimit(1)
                 Spacer()
                 Text("\(session.history.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.white.opacity(0.3))
             }
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(entries) { e in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(e.date, format: .dateTime.hour().minute().second())
-                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.white.opacity(0.35))
-                            Text(e.text).font(.system(size: 12))
-                                .foregroundStyle(color(e.kind)).lineLimit(3)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }
-                .padding(.trailing, 6)
-                .background(GeometryReader { Color.clear.preference(key: HistoryHeightKey.self, value: $0.size.height) })
+            ConversationTranscript(history: session.history, maxHeight: 150)
+            HStack(spacing: 5) {
+                Image(systemName: "terminal").font(.system(size: 9))
+                Text("Reply in the terminal").font(.system(size: 10))
             }
-            .onPreferenceChange(HistoryHeightKey.self) { listHeight = $0 }
-            .frame(height: listHeight == 0 ? maxHeight : min(listHeight, maxHeight))
-            if listHeight > maxHeight {
-                Text("↓ Scroll for older entries").font(.system(size: 10)).foregroundStyle(.white.opacity(0.3))
-            }
+            .foregroundStyle(.white.opacity(0.3))
         }
         .padding(.horizontal, 10)
-    }
-
-    private func color(_ kind: HistoryEntry.Kind) -> Color {
-        switch kind {
-        case .error: return BarTheme.error
-        case .request: return BarTheme.needsInput.opacity(0.9)
-        case .answer: return .white.opacity(0.85)
-        case .status, .action: return .white.opacity(0.7)
-        }
     }
 }
 
@@ -620,11 +590,6 @@ struct StopButton<Sink: ResponseSink>: View {
 
 // MARK: - Chat
 
-private struct ChatEndKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
 /// Conversation with one chat-capable session: transcript (oldest first, follows the end), input, send and stop.
 private struct ChatPanel<Sink: ResponseSink>: View {
     let session: AgentSession
@@ -632,11 +597,8 @@ private struct ChatPanel<Sink: ResponseSink>: View {
     let backend: ChatBackend
     let sink: Sink
     @ObservedObject var model: BarViewModel
-    @State private var listHeight: CGFloat = 0
     @State private var draft = ""
     @State private var fieldKey = 0
-    private let maxHeight: CGFloat = 110
-
     private var busy: Bool { session.state == .working }
 
     var body: some View {
@@ -653,7 +615,7 @@ private struct ChatPanel<Sink: ResponseSink>: View {
                 Spacer()
                 if busy { Text("working…").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)) }
             }
-            transcript
+            ConversationTranscript(history: session.history, maxHeight: 110)
             HStack(spacing: 8) {
                 ReplyField(placeholder: "Message to agent, Enter to send",
                            onEditing: { model.setEditing($0) },
@@ -670,55 +632,6 @@ private struct ChatPanel<Sink: ResponseSink>: View {
     private func send(_ text: String) {
         backend.send(text, sessionId: session.id)
         fieldKey += 1          // clears the field (new NSTextField)
-    }
-
-    private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(session.history) { e in line(e).id(e.id) }
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .padding(.trailing, 6)
-                .background(GeometryReader { Color.clear.preference(key: ChatEndKey.self, value: $0.size.height) })
-            }
-            .onPreferenceChange(ChatEndKey.self) { listHeight = $0 }
-            .frame(height: listHeight == 0 ? maxHeight : min(listHeight, maxHeight))
-            .onAppear { proxy.scrollTo("end", anchor: .bottom) }
-            .onChange(of: session.history.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
-            }
-        }
-    }
-
-    @ViewBuilder private func line(_ e: HistoryEntry) -> some View {
-        switch ChatLine.parse(e) {
-        case .user(let text):
-            HStack {
-                Spacer(minLength: 40)
-                bubble(text, fg: .black, bg: Color.white.opacity(0.92))
-            }
-        case .agent(let text):
-            HStack {
-                bubble(text, fg: .white, bg: Color.white.opacity(0.28))
-                Spacer(minLength: 40)
-            }
-        case .error(let text):
-            HStack {
-                bubble(text, fg: .white, bg: BarTheme.error.opacity(0.55))
-                Spacer(minLength: 40)
-            }
-        case .note(let text):
-            Text(text).font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
-                .lineLimit(2).padding(.horizontal, 4)
-        }
-    }
-
-    private func bubble(_ text: String, fg: Color, bg: Color) -> some View {
-        Text(text).font(.system(size: 12)).foregroundStyle(fg)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(bg))
     }
 }
 
