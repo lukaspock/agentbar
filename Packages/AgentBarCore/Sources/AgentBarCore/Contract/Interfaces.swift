@@ -10,6 +10,8 @@ public enum CoreEvent: Sendable {
     case cancelRequest(sessionId: String, requestId: String)
     case log(sessionId: String, entry: HistoryEntry)
     case sessionEnd(id: String)
+    /// Additive: the agent's working directory (untrusted text; the store keeps it only if it is a plain absolute path).
+    case sessionDirectory(id: String, path: String)
 }
 
 /// Read side used by presentations (UI). Implemented by `SessionStore` (package AgentBarCore, owner: B).
@@ -39,6 +41,13 @@ public protocol AgentAdapter: Sendable {
     /// Format the answer for the agent (e.g. Claude Code hook JSON on stdout). Empty Data = "no decision,
     /// let the agent show its own dialog" (used for timeouts and cancellations).
     func encode(response: AgentResponse, for request: AgentRequest) -> Data
+    /// Additive: metadata events derived from the same payload (e.g. the working directory). Applied by the transport
+    /// after `translate`; kept apart so `translate` output stays unchanged. Default: none.
+    func metadataEvents(payload: Data) -> [CoreEvent]
+}
+
+public extension AgentAdapter {
+    func metadataEvents(payload: Data) -> [CoreEvent] { [] }
 }
 
 /// A visual presentation of the bar (notch island, floating pill, free-floating circle).

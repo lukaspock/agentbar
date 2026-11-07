@@ -47,6 +47,37 @@ final class LiveChatBackend: ChatBackend {
 
     func runsAsAgent(sessionId: String) -> Bool { agentIds.contains(sessionId) }
 
+    /// Forks a terminal (hook) session into a new chat session: always local, as the owner (the transcript lives in the
+    /// owner's ~/.claude), never without `--fork-session` (enforced by `ChatConfig.launchSpec`). The terminal session
+    /// itself is not touched; failures become an error entry in the source session.
+    func continueInPanel(from session: AgentSession, completion: @escaping (Result<String, Error>) -> Void) {
+        func fail(_ message: String) {
+            store.apply(.log(sessionId: session.id, entry: HistoryEntry(kind: .error, text: "Continue in panel failed: " + message)))
+            completion(.failure(StartError(message: message)))
+        }
+        guard session.canContinueInPanel, let cwd = session.workingDirectory else {
+            fail("This session has no usable id or working directory."); return
+        }
+        guard let claude = ChatConfig.locateClaude() else {
+            fail("The claude CLI was not found (~/.local/bin, /opt/homebrew/bin, /usr/local/bin)."); return
+        }
+        let base = String(session.name.prefix(AgentBarLimits.maxNameLength - 7))
+        let config = ChatConfig(executable: claude, workingDirectory: URL(fileURLWithPath: cwd, isDirectory: true),
+                                name: base + " (fork)",
+                                resume: ChatResume(sessionId: session.id, sourceName: session.name))
+        let chat = ChatSession(config: config, store: store)
+        do { try chat.start() } catch {
+            switch error {
+            case ChatError.invalidConfig(let why): fail("Cannot continue here: \(why).")
+            case ChatError.spawnFailed(let why): fail("Could not start claude: \(why)")
+            default: fail("Could not start claude: \(error.localizedDescription)")
+            }
+            return
+        }
+        chats[chat.sessionId] = chat
+        completion(.success(chat.sessionId))
+    }
+
     func startSession(target: ChatTarget, completion: @escaping (Result<String, Error>) -> Void) {
         switch target {
         case .local(let directory):

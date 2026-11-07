@@ -15,6 +15,10 @@ protocol ChatBackend: AnyObject {
     /// Starts a session for the target chosen in the dialog. Default: local goes to `startSession(directory:)`,
     /// the agent target fails until a backend that knows the agent host overrides it.
     func startSession(target: ChatTarget, completion: @escaping (Result<String, Error>) -> Void)
+    /// "Continue in panel": starts a NEW chat session that forks the given terminal (hook) session
+    /// (`claude --resume <id> --fork-session` in its working directory, always local as the owner). On failure the
+    /// backend writes an error entry into the source session; the completion also carries the error.
+    func continueInPanel(from session: AgentSession, completion: @escaping (Result<String, Error>) -> Void)
     /// True only for sessions this app itself started with the agent target (App knowledge, never agent text).
     func runsAsAgent(sessionId: String) -> Bool
 }
@@ -27,6 +31,9 @@ extension ChatBackend {
         }
     }
     func runsAsAgent(sessionId: String) -> Bool { false }
+    func continueInPanel(from session: AgentSession, completion: @escaping (Result<String, Error>) -> Void) {
+        completion(.failure(AgentHostError.unavailable))
+    }
 }
 
 /// Holds the active chat backend. Views observe it so the input appears as soon as a backend is wired.
@@ -64,6 +71,22 @@ final class FakeChatBackend: ChatBackend {
 
     func supportsChat(sessionId: String) -> Bool { chatIds.contains(sessionId) }
 
+    /// Demo: a scripted fork. `--demo-fork-fail` makes it fail so the error bubble can be screenshotted.
+    func continueInPanel(from session: AgentSession, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let store else { return }
+        if LaunchOptions.current.demoForkFail {
+            let err = LiveChatBackendError(message: "The claude CLI was not found (~/.local/bin, /opt/homebrew/bin, /usr/local/bin).")
+            store.appendHistory(sessionId: session.id, HistoryEntry(kind: .error, text: "Continue in panel failed: \(err.message)"))
+            completion(.failure(err)); return
+        }
+        let id = "chat-" + String(UUID().uuidString.prefix(6)).lowercased()
+        chatIds.insert(id)
+        store.addSession(AgentSession(id: id, name: "\(session.name) (fork)", kind: .claudeCode, state: .idle,
+                                      history: [HistoryEntry(kind: .status, text: "Forked from \(session.name)")],
+                                      supportsStop: true))
+        completion(.success(id))
+    }
+
     func send(_ text: String, sessionId: String) {
         guard let store else { return }
         store.appendHistory(sessionId: sessionId, HistoryEntry(kind: .answer, text: "You: \(text)"), state: .working)
@@ -85,4 +108,9 @@ final class FakeChatBackend: ChatBackend {
                                       supportsStop: true))
         completion(.success(id))
     }
+}
+
+struct LiveChatBackendError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }

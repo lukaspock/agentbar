@@ -85,6 +85,10 @@ public final class ChatSession {
                 onExit: { status in d { MainActor.assumeIsolated { ref.value?.handleExit(status: status) } } })
         } catch { process = nil; phase = .exited; throw fail(error) }
         startWatchdog()
+        if let r = config.resume {
+            let from = ClaudeCodeAdapter.clean(r.sourceName, max: AgentBarLimits.maxNameLength) ?? "terminal session"
+            store.apply(.log(sessionId: sessionId, entry: HistoryEntry(kind: .status, text: "Forked from \(from)")))
+        }
     }
 
     /// Sends one user message. The state becomes `working` right away.

@@ -44,7 +44,7 @@ untested until the roadmap says otherwise.
 
 ## Session chat
 Every session shows up as a chat with speech bubbles in the panel. Sessions started by hooks (a `claude` running in your
-terminal) are read-only and show "Reply in the terminal". "Continue in panel" (fork the session into the panel) is planned,
+terminal) are read-only and show "Reply in the terminal". "Continue in panel" forks the session into a new chat in the panel (`claude --resume --fork-session`; implemented, not yet tried with a real `claude`),
 not available yet.
 
 ## Screenshots

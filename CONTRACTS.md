@@ -262,3 +262,10 @@ an old host answers an unknown op with `error` (link stays up). App API: `HostCl
 
 ## Phase 9: onboarding window (2026-11-05) - documented exception
 The "no extra windows" rule has one more exception, **requested by the user (2026-11-05)**: a normal (non-floating) onboarding window (`OnboardingWindowController`, 520x620, one instance) with Welcome, Sign-in, Setup and Done pages. It is shown at app start when `OnboardingTrigger.shouldShow` says so (never completed, or older version with a required step missing), from the menu entry "Setup…" and from Settings > Setup. State lives in `SetupRunner` (UserDefaults keys `onboarding.completedVersion`, `onboarding.skippedSteps`, `onboarding.useAgentUser`, `onboarding.snoozedUntil`); no secret is persisted. Launch flags: `--demo-onboarding [welcome|login|setup|done|error]` (implies `--demo`; fake runner, no probes, no system or `~/.claude` access, temp prefs file unless `--prefs-file` is given), `--onboarding-force`.
+
+## Additive contract changes: "Continue in panel" (terminal session -> forked chat)
+- `AgentSession.workingDirectory: String?` (new optional field, init param with default nil; Codable decodes older data as nil).
+- `CoreEvent.sessionDirectory(id:path:)` (new case). The store keeps `path` only if it is absolute, <= 1024 bytes, free of control characters and `..`.
+- `AgentAdapter.metadataEvents(payload:)` (new requirement WITH default `[]`; `translate` output is unchanged). `ClaudeCodeAdapter` returns the hook `cwd` (not for SessionEnd); the transport applies it after `translate`.
+- `ChatConfig.resume: ChatResume?` -> args `--resume <id> --fork-session` after the stream-json flags. Id strictly `[A-Za-z0-9-]`, 1...64, no leading `-`, passed as one argv element (no shell). `fork == false` and agent-user (remote) chats are rejected. `ChatSession` logs "Forked from <name>".
+- `AgentSession.canContinueInPanel` (claudeCode + valid id + absolute cwd) gates the UI button. UNVERIFIED against a real `claude --resume --fork-session` run.

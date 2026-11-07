@@ -18,6 +18,8 @@ struct LaunchOptions {
     var demoFlowNewName: String?  // --demo-flow-newname <text>: preset the "New workspace" name (validation screenshots)
     var demoFlowBot: String?      // --demo-flow-bot <bot name>: preselect a bot (its default folder/workspace preselects the project)
     var demoRename: String?       // --demo-rename <sessionId>: open the inline rename/color editor of that row
+    var demoForkFail = false      // --demo-fork-fail: "Continue in panel" fails in the demo (error bubble screenshots)
+    var demoForkAuto = false      // --demo-fork-auto: press "Continue in panel" by itself shortly after the panel appears (screenshots)
     var demoAgentUser = false     // --demo-agent-user: show the inline "Agent user" status in the panel
     var demoSelect: String?       // --demo-select <sessionId>: start with this session selected (screenshots)
     var prefsFile: URL?           // --prefs-file <path>: personalization file instead of ~/Library/Application Support/AgentBar
@@ -47,6 +49,8 @@ struct LaunchOptions {
             case "--demo-flow-newname": demoFlowNewName = next; i += 1
             case "--demo-rename": demoRename = next; i += 1
             case "--demo-agent-user": demoAgentUser = true
+            case "--demo-fork-fail": demoForkFail = true
+            case "--demo-fork-auto": demoForkAuto = true
             case "--prefs-file": prefsFile = next.map { URL(fileURLWithPath: $0) }; i += 1
             case "--demo-bot-skill": demoBotSkill = next; i += 1
             case "--demo-settings": demoSettings = next ?? "theme"; i += 1

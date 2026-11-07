@@ -4,7 +4,7 @@ Alles hier braucht dich am Rechner (Passwort, Browser-Login, echtes System). Rei
 
 ## 0. Ausgangslage
 - Der Daemon `agentbar-host` läuft vermutlich NICHT (ein Migrationsversuch hat ihn gestoppt). Der Account `agentbar` ist unverändert (uid 502, Shell `/bin/zsh`).
-- Die App auf dem Desktop (`~/Desktop/AgentBar.app`) ist ALT (Migrations-Ablauf, der am UID-Wechsel scheitert). Vor dem nächsten Test sag mir Bescheid: ich baue die neue Version und ersetze sie (beendet die laufende AgentBar kurz).
+- Der Onboarding-Durchlauf lief am 2026-11-07 durch (Daemon läuft, Account übernommen). Offen: Abschnitte 5 bis 8 (Chat als Agent-Benutzer, nur lokal, Hooks, Eindruck am Notch) und neu: Abschnitt 10.
 - Neu: Ein vorhandener Account `agentbar` (uid 502) wird jetzt ÜBERNOMMEN, die UID bleibt (macOS erlaubt den UID-Wechsel nicht, siehe `Docs/research/dscl-permission.md`). Es gibt keine Migrate-Karte mehr.
 
 ## 1. Daemon wieder starten (Terminal)
@@ -59,6 +59,9 @@ In einem Terminal `claude` starten, kurz etwas tun lassen: Taucht die Session in
 
 ## 9. Aufräumen, falls nötig
 - Account und Daemon entfernen: `sudo Scripts/remove-agent-user.sh --owner "$USER"` (löscht Home inkl. Workspaces nach Bestätigung; vorher `--dry-run` ansehen).
+
+## 10. Im Panel fortsetzen (neu)
+In einem Terminal `claude` benutzen, dann im Panel die Session wählen und "Continue in panel" drücken. Erwartet: neue Session "<name> (fork)", Notiz "Forked from …", Antworten auf eine Nachricht. Prüfe, dass die Terminal-Session unverändert bleibt. Falls es nicht klappt: Fehlerblase bzw. Text schicken (`claude --resume` braucht das gleiche Arbeitsverzeichnis).
 
 ## Bekannte Lücken (nie real gelaufen)
 Admin-Prompt aus der App, Account-Anlage per dscl, Daemon-Start mit Post-Check, Token-Übergabe als `agentbar`, `claude setup-token` im PTY (echte Ausgabe), Autostart/Benachrichtigungen in der ad-hoc-signierten App, Codex-Hooks.

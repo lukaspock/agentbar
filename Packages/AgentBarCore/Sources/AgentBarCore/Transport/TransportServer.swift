@@ -566,12 +566,14 @@ public final class TransportServer: @unchecked Sendable {
               let data = try? JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed]) else {
             return Self.error("invalid payload")
         }
-        guard let events = try? adapter.translate(payload: data) else { return Self.error("invalid payload") }
+        guard let translated = try? adapter.translate(payload: data) else { return Self.error("invalid payload") }
+        let events = translated + adapter.metadataEvents(payload: data)
         let touched = Set(events.compactMap { ev -> String? in
             switch ev {
             case .sessionUpdate(let id, _, _, _, _, _): return id
             case .ask(let sid, _), .cancelRequest(let sid, _), .log(let sid, _): return sid
             case .sessionEnd(let id): return id
+            case .sessionDirectory(let id, _): return id
             }
         })
         // Hook session ids that belong to an in-app chat (the chat's own id or the claude session id it reported) are refused:

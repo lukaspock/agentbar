@@ -60,9 +60,14 @@ public struct AgentSession: Codable, Sendable, Identifiable, Hashable {
     public var history: [HistoryEntry]       // capped by the store (max 50)
     public var updatedAt: Date
     public var supportsStop: Bool            // true => panel shows pause/stop button
+    /// Absolute working directory the agent reported (hook `cwd`); additive, nil when unknown. Used only for
+    /// "Continue in panel" (the fork starts there); it is validated again when a process is started.
+    public var workingDirectory: String?
     public init(id: String, name: String, kind: AgentKind, state: SessionState = .idle,
                 currentAction: String? = nil, pendingRequests: [AgentRequest] = [],
-                history: [HistoryEntry] = [], updatedAt: Date = Date(), supportsStop: Bool = false) {
+                history: [HistoryEntry] = [], updatedAt: Date = Date(), supportsStop: Bool = false,
+                workingDirectory: String? = nil) {
+        self.workingDirectory = workingDirectory
         self.id = id; self.name = name; self.kind = kind; self.state = state
         self.currentAction = currentAction; self.pendingRequests = pendingRequests
         self.history = history; self.updatedAt = updatedAt; self.supportsStop = supportsStop

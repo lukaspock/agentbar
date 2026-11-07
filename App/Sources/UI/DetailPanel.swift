@@ -147,7 +147,7 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                 ChatPanel(session: selected, look: SessionLook.resolve(selected, store: prefs.store),
                           backend: backend, sink: store, model: model)
             } else if !selected.history.isEmpty {
-                HookConversationPanel(session: selected)
+                HookConversationPanel(session: selected, backend: hub.backend, model: model)
             }
         }
         if selected == nil, hub.backend != nil {
@@ -524,9 +524,14 @@ private struct GroupHeader: View {
 }
 
 /// Conversation of a session that is only observed through hooks (terminal): same bubbles as a chat session,
-/// but no input. Replying happens in the terminal, so only a quiet hint is shown.
+/// but no input. Replying happens in the terminal; "Continue in panel" starts a forked copy as a chat session here.
 private struct HookConversationPanel: View {
     let session: AgentSession
+    let backend: ChatBackend?
+    @ObservedObject var model: BarViewModel
+    @State private var starting = false
+
+    private var canContinue: Bool { backend != nil && session.canContinueInPanel }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -542,8 +547,43 @@ private struct HookConversationPanel: View {
                 Text("Reply in the terminal").font(.system(size: 10))
             }
             .foregroundStyle(.white.opacity(0.3))
+            if canContinue {
+                VStack(alignment: .leading, spacing: 5) {
+                    Button(action: continueInPanel) {
+                        HStack(spacing: 5) {
+                            Image(systemName: starting ? "hourglass" : "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
+                            Text(starting ? "Starting…" : "Continue in panel").font(.system(size: 12, weight: .semibold)).lineLimit(1).fixedSize()
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 13).padding(.vertical, 6)
+                        .background(Capsule().fill(Color.white.opacity(starting ? 0.08 : 0.16)))
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(starting)
+                    Text("Starts a copy of this conversation here; the terminal session is not changed")
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
+            }
         }
         .padding(.horizontal, 10)
+        .task {
+            guard LaunchOptions.current.demoForkAuto, canContinue else { return }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if !Task.isCancelled { continueInPanel() }
+        }
+    }
+
+    private func continueInPanel() {
+        guard let backend, !starting else { return }
+        starting = true
+        backend.continueInPanel(from: session) { result in
+            starting = false
+            // Failure: the backend already wrote an error bubble into this session's transcript.
+            if case .success(let id) = result { withAnimation(BarTheme.spring) { model.selectedSessionId = id } }
+        }
     }
 }
 

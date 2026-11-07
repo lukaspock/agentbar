@@ -125,6 +125,9 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
             var e = entry; e.text = e.text.capped(AgentBarLimits.maxTextLength)
             append(e, at: i)
             touch(i)
+        case let .sessionDirectory(id, path):
+            guard Self.isPlainAbsolutePath(path), let i = ensureSession(id) else { return }
+            sessions[i].workingDirectory = path   // no touch(): metadata only, must not reorder or wake the list
         case let .sessionEnd(id):
             guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
             for r in sessions[i].pendingRequests {
@@ -242,6 +245,13 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         if sessions[i].pendingRequests.isEmpty && sessions[i].state == .needsInput { sessions[i].state = .working }
         touch(i)
         waiters.removeValue(forKey: requestId)?(response)
+    }
+
+    /// Absolute, bounded, no control characters, no `..` component.
+    static func isPlainAbsolutePath(_ p: String) -> Bool {
+        guard p.hasPrefix("/"), p.utf8.count <= 1024 else { return false }
+        if p.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) { return false }
+        return !p.split(separator: "/", omittingEmptySubsequences: true).contains("..")
     }
 
     private func ensureSession(_ rawId: String) -> Int? {

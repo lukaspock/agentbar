@@ -87,6 +87,16 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         }
     }
 
+    /// `cwd` of a hook payload as `.sessionDirectory` (not for SessionEnd). Untrusted: the store validates the path.
+    public func metadataEvents(payload: Data) -> [CoreEvent] {
+        guard payload.count <= Self.maxPayloadBytes,
+              let obj = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let event = obj["hook_event_name"] as? String, event != "SessionEnd",
+              let sid = obj["session_id"] as? String, !sid.isEmpty, sid.count <= AgentBarLimits.maxIdLength,
+              let cwd = obj["cwd"] as? String, !cwd.isEmpty else { return [] }
+        return [.sessionDirectory(id: sid, path: cwd)]
+    }
+
     /// Max characters of an approval text. Stays below `AgentBarLimits.maxTextLength` so the store never cuts it.
     public static let maxApprovalText = AgentBarLimits.maxTextLength - 100
     public static let truncationMarker = "… [truncated, check in terminal]"

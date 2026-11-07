@@ -9,6 +9,34 @@ public enum ChatError: Error, Equatable, Sendable {
     case spawnFailed(String)
 }
 
+/// Continue an existing claude session (`--resume <id> --fork-session`) instead of starting an empty conversation.
+/// Always a FORK: resuming without a fork would interleave this process's messages into the transcript of the open
+/// terminal session. `fork == false` is rejected by `ChatConfig.launchSpec`. Local only (transcripts live in the
+/// owner's ~/.claude); rejected for the agent-user host.
+public struct ChatResume: Sendable, Equatable {
+    public var sessionId: String
+    public var fork: Bool
+    /// Display name of the source session (for the "Forked from <name>" note).
+    public var sourceName: String?
+    public init(sessionId: String, fork: Bool = true, sourceName: String? = nil) {
+        self.sessionId = sessionId; self.fork = fork; self.sourceName = sourceName
+    }
+    public static let maxIdLength = 64
+    /// Strict: only `[A-Za-z0-9-]`, 1...64 chars, must not start with `-`. The id is passed as one argv element, never through a shell.
+    public static func isValidSessionId(_ s: String) -> Bool {
+        guard !s.isEmpty, s.utf8.count <= maxIdLength, !s.hasPrefix("-") else { return false }
+        return s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D }
+    }
+}
+
+public extension AgentSession {
+    /// "Continue in panel" is offered only for Claude Code hook sessions with a valid claude session id and a known
+    /// absolute working directory (the fork must start where the transcript lives).
+    var canContinueInPanel: Bool {
+        kind == .claudeCode && ChatResume.isValidSessionId(id) && (workingDirectory?.hasPrefix("/") ?? false)
+    }
+}
+
 /// Configuration of one chat session (one `claude` process).
 public struct ChatConfig: Sendable {
     /// Permission modes that keep prompts on the host (AgentBar). `bypassPermissions`/`auto` are deliberately not offered.
@@ -41,6 +69,8 @@ public struct ChatConfig: Sendable {
     /// work root. `executable`/`workingDirectory` are then display-only placeholders, no local file checks happen, and the
     /// child environment is empty (the host builds its own). Use `ChatConfig.remote(...)`.
     public var remoteWorkspace: String?
+    /// Non-nil = continue that claude session as a fork (local only).
+    public var resume: ChatResume?
 
     public static let defaultPassthrough = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR",
                                             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
@@ -51,7 +81,9 @@ public struct ChatConfig: Sendable {
                 model: String? = nil, maxBudgetUSD: Double? = nil, tools: [String]? = nil,
                 permissionMode: PermissionMode? = nil, passthroughEnvironment: [String] = ChatConfig.defaultPassthrough,
                 extraEnvironment: [String: String] = [:], idleTimeout: TimeInterval? = 1800,
-                idleCheckInterval: TimeInterval = 5, killGrace: TimeInterval = 2, remoteWorkspace: String? = nil) {
+                idleCheckInterval: TimeInterval = 5, killGrace: TimeInterval = 2, remoteWorkspace: String? = nil,
+                resume: ChatResume? = nil) {
+        self.resume = resume
         self.executable = executable; self.workingDirectory = workingDirectory; self.sessionId = sessionId
         self.name = name; self.model = model; self.maxBudgetUSD = maxBudgetUSD; self.tools = tools
         self.permissionMode = permissionMode; self.passthroughEnvironment = passthroughEnvironment
@@ -109,6 +141,12 @@ public struct ChatConfig: Sendable {
             args += ["--tools", tools.joined(separator: ",")]
         }
         if let permissionMode { args += ["--permission-mode", permissionMode.rawValue] }
+        if let resume {
+            guard remoteWorkspace == nil else { throw ChatError.invalidConfig("resume is only possible for local chats") }
+            guard resume.fork else { throw ChatError.invalidConfig("resume must fork the session") }
+            guard ChatResume.isValidSessionId(resume.sessionId) else { throw ChatError.invalidConfig("invalid session id") }
+            args += ["--resume", resume.sessionId, "--fork-session"]
+        }
         if let ws = remoteWorkspace {
             // Remote: structured request only. The environment of the child is built by the host, never by the app.
             let remote = RemoteLaunch(workspace: ws, model: model, maxBudgetUSD: maxBudgetUSD, tools: tools, permissionMode: permissionMode?.rawValue)
