@@ -1,6 +1,6 @@
 # AgentBar – Roadmap & Handover
 
-Letzter Stand: 2026-11-01. Lies zuerst `CONTRACTS.md` (Verträge, Wire-Protokoll, "Phase 1 as built"),
+Letzter Stand: 2026-11-01 (Phase-1-Abschnitte unten sind historisch; aktueller Stand: README "Status" und HANDOFF.md, Phasen 2 und 3, Onboarding, Agent-User, Session-Chat mit Freigabe-Blase/Queue/Fork sind inzwischen gebaut). Lies zuerst `CONTRACTS.md` (Verträge, Wire-Protokoll, "Phase 1 as built"),
 danach `Docs/research/integrations.md` (Claude-Hooks/Codex-Recherche) und `Docs/research/e2e-claudecode.md`.
 Rolle beim Weiterarbeiten: Coordinator/Product Owner, der Code delegiert; Berichte der Subagents immer selbst nachprüfen.
 

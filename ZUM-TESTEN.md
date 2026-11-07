@@ -4,7 +4,7 @@ Alles hier braucht dich am Rechner (Passwort, Browser-Login, echtes System). Rei
 
 ## 0. Ausgangslage
 - Der Daemon `agentbar-host` läuft vermutlich NICHT (ein Migrationsversuch hat ihn gestoppt). Der Account `agentbar` ist unverändert (uid 502, Shell `/bin/zsh`).
-- Der Onboarding-Durchlauf lief am 2026-11-07 durch (Daemon läuft, Account übernommen). Offen: Abschnitte 5 bis 8 (Chat als Agent-Benutzer, nur lokal, Hooks, Eindruck am Notch) und neu: Abschnitt 10.
+- Der Onboarding-Durchlauf lief am 2026-11-07 durch (Daemon läuft, Account übernommen). Offen: Abschnitte 5 bis 8 (Chat als Agent-Benutzer, nur lokal, Hooks, Eindruck am Notch) und neu: Abschnitte 10 bis 13.
 - Neu: Ein vorhandener Account `agentbar` (uid 502) wird jetzt ÜBERNOMMEN, die UID bleibt (macOS erlaubt den UID-Wechsel nicht, siehe `Docs/research/dscl-permission.md`). Es gibt keine Migrate-Karte mehr.
 
 ## 1. Daemon wieder starten (Terminal)
@@ -63,5 +63,20 @@ In einem Terminal `claude` starten, kurz etwas tun lassen: Taucht die Session in
 ## 10. Im Panel fortsetzen (neu)
 In einem Terminal `claude` benutzen, dann im Panel die Session wählen und "Continue in panel" drücken. Erwartet: neue Session "<name> (fork)", Notiz "Forked from …", Antworten auf eine Nachricht. Prüfe, dass die Terminal-Session unverändert bleibt. Falls es nicht klappt: Fehlerblase bzw. Text schicken (`claude --resume` braucht das gleiche Arbeitsverzeichnis).
 
+## 11. Freigabe-Blase mit echtem claude (neu)
+Voraussetzung: Hooks eingerichtet (Abschnitt 7). In einem Terminal `claude` starten und etwas verlangen, das eine Freigabe braucht (z. B. "führe `ls` und danach `git status` aus"). Im Panel die Session wählen.
+1. Die Freigabe erscheint als Blase im Gespräch (Tool, Befehl, Allow / Always / Deny, Countdown "terminal prompt takes over in ...").
+2. **Deny mit Begründung:** Text ins Feld "Reason for denying" tippen (z. B. "nutze stattdessen git diff"), Deny drücken. Erwartet: Claude zeigt die Ablehnung samt Begründung und richtet sich danach. Notiere, ob Claude die Begründung wörtlich nennt oder befolgt.
+3. **Always mit Scope:** Always drücken. Erwartet: die angezeigte Regel (z. B. `Bash(git status:*)`, "this project, local settings") landet in `.claude/settings.local.json` des Projekts; der gleiche Befehl fragt danach nicht mehr. Prüfe die Datei und ob der Scope dem angezeigten entspricht.
+4. Terminal und Panel parallel: Antwort im Terminal geben, solange die Blase offen ist. Erwartet: Blase verschwindet, nichts doppelt.
+
+## 12. Nachricht in die Warteschlange (neu)
+1. Mit laufendem `claude` im Terminal (Claude arbeitet gerade, z. B. langer Auftrag) im Panel in "Queue a message for the next step" eine Nachricht tippen, Enter. Erwartet: graue Blase "queued · waiting for Claude's next step", abbrechbar mit dem x.
+2. Warten, bis Claude seinen Schritt beendet (Stop). **Wichtig:** Wird die Nachricht zugestellt (Blase wird normal, Notiz "delivered") und **behandelt Claude den `reason` als Anweisung** (macht er danach weiter und setzt die Nachricht um)? Falls er sie nur zitiert oder ignoriert: Wortlaut notieren.
+3. Randfälle: mehr als 3 Nachrichten (Fehlermeldung "queue full"), Nachricht abbrechen vor der Zustellung, Session wartet im Terminal auf eine Freigabe (Hinweis "type there or use Continue in panel"), Nachricht älter als 30 min wird verworfen.
+
+## 13. Token-Hinweis (neu, nur Sichtprüfung)
+Settings > Setup, Zeile "Claude sign-in": Bei frischem Token steht kein Hinweis. Ab Tag 330 (nur mit eingerichtetem Agent-Benutzer) sollte dort ein Ablauf-Hinweis mit Dreieck stehen; ein abgelaufener Token zählt als fehlend und lässt sich dort erneuern. Zum Ansehen reicht der Demo-Modus nicht, nur Sichtprüfung des normalen Zustands am echten System.
+
 ## Bekannte Lücken (nie real gelaufen)
-Admin-Prompt aus der App, Account-Anlage per dscl, Daemon-Start mit Post-Check, Token-Übergabe als `agentbar`, `claude setup-token` im PTY (echte Ausgabe), Autostart/Benachrichtigungen in der ad-hoc-signierten App, Codex-Hooks.
+Admin-Prompt aus der App (Touch ID?), Fork per `--resume`, Queue-Zustellung per Stop-Hook, Freigabe-Blase mit echtem PermissionRequest, Account-Anlage per dscl, Daemon-Start mit Post-Check, Token-Übergabe als `agentbar`, `claude setup-token` im PTY (echte Ausgabe), Autostart/Benachrichtigungen in der ad-hoc-signierten App, Codex-Hooks.
