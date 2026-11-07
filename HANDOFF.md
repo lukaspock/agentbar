@@ -20,11 +20,10 @@ Admin-Prompt aus der App (Touch ID oder nur Passwort?), Anlage eines Role-Accoun
 
 ## Offene Punkte
 1. **Echter Testlauf mit dem User** (siehe ZUM-TESTEN.md), Ergebnisse einarbeiten (Statuslog: `/Library/Application Support/AgentBar/setup-status.jsonl`).
-2. **Hooks-Diff vor dem Schreiben bestätigen?** Aktuell erscheint der Diff nach dem Schreiben unter "View changes" (Onboarding gilt als Bestätigung). Entscheidung beim User.
-3. **Freigabe-Kopfzeile zeigt den Projektnamen doppelt** (`DetailPanel.swift` RequestCard ~190-200 und `ClaudeCodeAdapter.renderApproval` "Project: …"); Fix-Vorschlag: "Project: …" aus der Überschrift im Core streichen (Tests anpassen). Layout-Entscheidung des Users.
-4. **Farbe wärmer und Glow kräftiger** (`BarTheme.idleDim` 0,55 → ca. 0,65): erst nach dem Eindruck des Users am echten Notch.
+2. **Entschieden 2026-11-07 (User: "find ich gut"):** Hooks-Diff bleibt nach dem Schreiben unter "View changes" (Onboarding gilt als Bestätigung); "Project: …" wird aus dem Freigabetext gestrichen (Kopfzeile zeigt den Namen schon); `BarTheme.idleDim` 0,65. Falls diese Punkte noch uncommittet im Working Tree liegen, prüfen und committen.
+3. **Glow-Ring kräftiger:** noch keine klare Vorgabe, nach dem Eindruck des Users am echten Notch.
 5. **B5-Abnahme**, Stufe 3 Agent-User (Dead-Man/Sleep-Reconnect, Codex, `rotateTokens`, Workspace-Gruppenrechte), Phase 4 Vision (VM), Token-Ablauf nach einem Jahr melden.
-6. **Das "zweite Problem" des Users:** Der User schrieb am 2026-11-07 "2 probleme", beschrieb aber nur das erste (Setup zu kompliziert). Nachfragen, was das zweite ist.
+6. (Erledigt) Das "zweite Problem" aus der Nachricht vom 2026-11-07 hat der User ausdrücklich verworfen ("vergessen").
 7. Kleine Punkte: Pause/Resume nur im Store, Doppelklick-Umbenennen vs. Aufklappen ungeprüft, Mikro-Aktionen nie in Bewegung geprüft, "z" im eingeklappten Kreis evtl. abgeschnitten, Alias `ab` kollidiert mit Apache-Benchmark.
 8. Uncommittet bewusst: Icon-Experimente (`App/Resources/.../AppIcon.appiconset`, `App/Screenshots/icon-*.png`), nachfragen.
 

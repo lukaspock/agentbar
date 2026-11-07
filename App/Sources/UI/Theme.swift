@@ -6,7 +6,7 @@ enum BarTheme {
     static let error = Color(red: 1.0, green: 0.30, blue: 0.36)
     static let idle = Color.white.opacity(0.40)
     /// Brightness of the agent colour while a blob rests (idle/done).
-    static let idleDim = 0.55
+    static let idleDim = 0.65
     /// Idle time until the blob falls asleep. Override for testing: env `AGENTBAR_IDLE_SLEEP_SECONDS`.
     static let idleSleepAfter: TimeInterval = {
         ProcessInfo.processInfo.environment["AGENTBAR_IDLE_SLEEP_SECONDS"].flatMap(TimeInterval.init) ?? 180

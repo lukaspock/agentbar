@@ -177,7 +177,7 @@ final class ChatSessionTests: XCTestCase {
         fake.emit(permission)
         let req = try XCTUnwrap(session(store).pendingRequests.first)
         XCTAssertEqual(session(store).state, .needsInput)
-        XCTAssertTrue(req.text.hasPrefix("Allow Bash? Project:"))
+        XCTAssertTrue(req.text.hasPrefix("Allow Bash?"))
         XCTAssertTrue(req.text.contains("command: rm -rf build"))
         XCTAssertEqual(req.options.map(\.id), ["allow", "deny", "always"])
         XCTAssertNil(req.defaultOptionId)

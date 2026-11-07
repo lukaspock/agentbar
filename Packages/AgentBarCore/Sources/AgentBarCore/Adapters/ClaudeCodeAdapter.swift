@@ -122,7 +122,7 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         guard !toolRaw.isEmpty else { return (nil, "unknown tool") }
         guard toolRaw.count <= 60 else { return (nil, "tool name too long") }
         guard let dict = input as? [String: Any], !dict.isEmpty else { return (nil, "no displayable parameters") }
-        var lines = ["Allow \(toolRaw)? Project: \(singleLine(project))"]
+        var lines = ["Allow \(toolRaw)?"]
         if let cwd, !singleLine(cwd).isEmpty { lines.append("cwd: \(singleLine(cwd))") }
         // Counted in Characters (what the store caps) AND in unicode scalars (a single grapheme can carry thousands).
         func size(_ str: String) -> Int { max(str.count, str.unicodeScalars.count) }

@@ -82,7 +82,7 @@ Do not move the mouse unless needed; no controlling other apps; no system change
 ## Approval display + click safety (security correction, core)
 **Approval text** (`ClaudeCodeAdapter.renderApproval`, plain text, shown monospaced/scrollable by the UI):
 ```
-Allow <Tool>? Project: <name>
+Allow <Tool>?
 cwd: <cwd>                       (only if present)
 <key>: <value>                   one entry per top-level key of tool_input, keys sorted
   <continuation line>            further lines of a value are indented by 2 spaces

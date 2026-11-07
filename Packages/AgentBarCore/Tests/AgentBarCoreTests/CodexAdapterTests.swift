@@ -20,7 +20,7 @@ final class CodexAdapterTests: XCTestCase {
         let ev = try a.translate(payload: payload(p))
         let r = try XCTUnwrap(ask(ev))
         XCTAssertEqual(r.options.map(\.id), ["allow", "deny"])
-        XCTAssertEqual(r.text, "Allow Bash? Project: proj\ncwd: /tmp/proj\ncommand: rm -rf build\ndescription: null")
+        XCTAssertEqual(r.text, "Allow Bash?\ncwd: /tmp/proj\ncommand: rm -rf build\ndescription: null")
         if case let .sessionUpdate(_, _, kind, _, _, _) = ev[0] { XCTAssertEqual(kind, .codex) } else { XCTFail() }
         XCTAssertEqual(String(decoding: a.encode(response: AgentResponse(requestId: r.requestId, optionId: "allow"), for: r), as: UTF8.self),
                        #"{"hookSpecificOutput":{"decision":{"behavior":"allow"},"hookEventName":"PermissionRequest"}}"#)

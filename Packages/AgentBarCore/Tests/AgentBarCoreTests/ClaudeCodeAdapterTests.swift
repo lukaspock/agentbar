@@ -22,7 +22,7 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         if case let .sessionUpdate(_, name, _, state, _, _) = ev[0] { XCTAssertEqual(name, "my project"); XCTAssertNil(state) } else { XCTFail() }
         let (sid, r) = try XCTUnwrap(ask(ev))
         XCTAssertEqual(sid, "s-1"); XCTAssertEqual(r.type, .approval)
-        XCTAssertEqual(r.text, "Allow Bash? Project: my project\ncwd: /tmp/my project\ncommand: ls -la /tmp\ndescription: list")
+        XCTAssertEqual(r.text, "Allow Bash?\ncwd: /tmp/my project\ncommand: ls -la /tmp\ndescription: list")
         XCTAssertEqual(r.options.map(\.id), ["allow", "deny"])
         XCTAssertEqual(r.timeoutSeconds, 120); XCTAssertNil(r.defaultOptionId)
     }
@@ -47,7 +47,7 @@ final class ClaudeCodeAdapterTests: XCTestCase {
     func testEncodeAllowDenyExactJSON() throws {
         var p = base("PermissionRequest"); p["tool_name"] = "Write"; p["tool_input"] = ["file_path": "/tmp/x.txt", "content": "hi"]
         let (_, r1) = try XCTUnwrap(ask(try a.translate(payload: payload(p))))
-        XCTAssertEqual(r1.text, "Allow Write? Project: my project\ncwd: /tmp/my project\ncontent: hi\nfile_path: /tmp/x.txt")
+        XCTAssertEqual(r1.text, "Allow Write?\ncwd: /tmp/my project\ncontent: hi\nfile_path: /tmp/x.txt")
         XCTAssertEqual(String(decoding: a.encode(response: AgentResponse(requestId: r1.requestId, optionId: "allow"), for: r1), as: UTF8.self),
                        #"{"hookSpecificOutput":{"decision":{"behavior":"allow"},"hookEventName":"PermissionRequest"}}"#)
         let (_, r2) = try XCTUnwrap(ask(try a.translate(payload: payload(p))))
@@ -138,7 +138,7 @@ final class ClaudeCodeAdapterTests: XCTestCase {
                            "nested": ["b": 1, "a": "x/y"], "flag": true]
         let (_, r) = try XCTUnwrap(ask(try a.translate(payload: payload(p))))
         let lines = r.text.components(separatedBy: "\n")
-        XCTAssertEqual(lines[0], "Allow Write? Project: my project")
+        XCTAssertEqual(lines[0], "Allow Write?")
         XCTAssertEqual(lines[1], "cwd: /tmp/my project")
         XCTAssertEqual(Array(lines[2...]), ["content: line1", "  line2", "  127.0.0.1 evil", "file_path: /etc/hosts", "flag: true",
                                             "mode: 493", #"nested: {"a":"x/y","b":1}"#])
