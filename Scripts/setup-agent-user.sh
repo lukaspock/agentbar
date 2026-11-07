@@ -219,11 +219,23 @@ if want agentUser; then
     new_uid="$cur_uid"
     if [[ "$cur_uid" -gt $UID_MAX ]]; then new_uid="$(pick_uid)"; fi
     info "migrating '${AGENT_USER}' (uid ${cur_uid}) to role account (uid ${new_uid})"
+    # Preflight: prove the directory service accepts writes to this record BEFORE anything is stopped
+    # (macOS may answer eDSPermissionError even for root, depending on the calling process).
+    run dscl . -create "/Users/${AGENT_USER}" UserShell "${cur_shell:-/bin/zsh}" \
+      || die "the directory service refused a write to '${AGENT_USER}' (eDSPermissionError?); nothing was changed"
+    was_loaded=0; daemon_loaded && was_loaded=1
     stop_daemon_and_agent
-    run dscl . -create "/Users/${AGENT_USER}" UniqueID "$new_uid"
-    run dscl . -create "/Users/${AGENT_USER}" UserShell /usr/bin/false
-    run dscl . -create "/Users/${AGENT_USER}" Password '*'
-    run dscl . -create "/Users/${AGENT_USER}" IsHidden 1
+    # From here on a failure must not leave the host daemon stopped.
+    mig() {
+      run "$@" || {
+        [[ $was_loaded -eq 1 ]] && launchctl bootstrap system "$PLIST_DST" >/dev/null 2>&1 || true
+        die "account change failed (daemon restarted, account left as is): $*"
+      }
+    }
+    mig dscl . -create "/Users/${AGENT_USER}" UniqueID "$new_uid"
+    mig dscl . -create "/Users/${AGENT_USER}" UserShell /usr/bin/false
+    mig dscl . -create "/Users/${AGENT_USER}" Password '*'
+    mig dscl . -create "/Users/${AGENT_USER}" IsHidden 1
     run dscl . -delete "/Users/${AGENT_USER}" AuthenticationAuthority || true
     run dscl . -delete "/Users/${AGENT_USER}" PasswordPolicyOptions || true
     if [[ $DRY_RUN -eq 0 ]]; then
