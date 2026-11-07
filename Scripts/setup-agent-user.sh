@@ -221,6 +221,16 @@ if want agentUser; then
         || warn "could not remove PasswordPolicyOptions of '${AGENT_USER}'"
     fi
     [[ $DRY_RUN -eq 1 ]] || dscacheutil -flushcache 2>/dev/null || true
+    # Fail closed: the adopted account must end up unable to log in (shell false, OR no
+    # AuthenticationAuthority and password '*'/empty). Otherwise stop before token/IPC/daemon steps.
+    if [[ $DRY_RUN -eq 0 ]]; then
+      a_shell="$(dscl_value UserShell)"
+      a_pw="$(dscl_value Password)"
+      a_auth=0; dscl . -read "/Users/${AGENT_USER}" AuthenticationAuthority >/dev/null 2>&1 && a_auth=1
+      if [[ "$a_shell" != "/usr/bin/false" ]] && { [[ $a_auth -eq 1 ]] || { [[ -n "$a_pw" && "$a_pw" != "*" ]]; }; }; then
+        die "adopted account '${AGENT_USER}' can still log in (shell ${a_shell:-?}); hardening was refused by the directory service, nothing further was changed"
+      fi
+    fi
   fi
 
   # Home: install -d is idempotent and (re)applies owner and mode.
