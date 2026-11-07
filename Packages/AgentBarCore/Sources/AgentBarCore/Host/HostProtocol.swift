@@ -126,6 +126,9 @@ public struct HostTokenStatus: Codable, Sendable, Equatable {
 
     public static let plausibleSize = 40...4096
 
+    /// Age verdict of the token file (see `TokenExpiry`); nil when there is no token or no mtime.
+    public func expiry(now: Date = Date()) -> TokenExpiry? { present ? TokenExpiry.status(mtime: mtime, now: now) : nil }
+
     public init(present: Bool, mode: Int? = nil, ownerOK: Bool = false, size: Int? = nil, plausibleLength: Bool = false, mtime: Int? = nil) {
         self.present = present; self.mode = mode; self.ownerOK = ownerOK; self.size = size
         self.plausibleLength = plausibleLength; self.mtime = mtime

@@ -422,6 +422,7 @@ private struct BotEditorView: View {
 private struct SetupSettingsView: View {
     @State private var state: SetupState?
     @State private var loading = false
+    @State private var tokenMtime: Int?
 
     private static let order: [SetupStep] = [.claudeCLI, .agentUser, .hostBinary, .cli, .claudeToken, .claudeHooks, .codexHooks, .autostart, .notifications]
 
@@ -436,6 +437,7 @@ private struct SetupSettingsView: View {
             if SetupCoordinator.shared.runner == nil {
                 Text("Demo mode: no real setup state.").font(.caption).foregroundStyle(.secondary)
             }
+            tokenHint
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(Array(Self.order.enumerated()), id: \.element) { i, step in
@@ -449,9 +451,31 @@ private struct SetupSettingsView: View {
         .task { await load() }
     }
 
+    /// Expiry of the agent's Claude sign-in; only when the agent user is set up and the file time is known.
+    private var tokenExpiry: TokenExpiry? {
+        guard let state, state.options.useAgentUser, state.status(of: .agentUser) == .done, let m = tokenMtime else { return nil }
+        let e = TokenExpiry.status(mtime: m, now: Date())
+        return e == .unknown ? nil : e
+    }
+
+    @ViewBuilder private var tokenHint: some View {
+        if let e = tokenExpiry, let days = TokenExpiry.daysLeft(mtime: tokenMtime, now: Date()) {
+            HStack(spacing: 8) {
+                Text(e.message ?? "Claude sign-in is valid for about \(days) more days.")
+                    .font(.caption).foregroundStyle(e == .ok ? Color.secondary : Color.orange)
+                Spacer()
+                Button("Renew sign-in") { SetupCoordinator.shared.show(page: .login) }.controlSize(.small)
+            }
+        }
+    }
+
     private func row(_ step: SetupStep) -> some View {
         let status = state?.status(of: step)
+        let expiryText = step == .claudeToken ? tokenExpiry?.message : nil
         let (icon, color, text): (String, Color, String) = {
+            if let expiryText, status == .done || status == .missing {
+                return (status == .done ? "exclamationmark.triangle.fill" : "circle", .orange, expiryText)
+            }
             switch status {
             case .done?: return ("checkmark.circle.fill", .green, "Done")
             case .failed(let m)?: return ("exclamationmark.circle.fill", .red, m)
@@ -477,6 +501,7 @@ private struct SetupSettingsView: View {
         guard let runner = SetupCoordinator.shared.runner else { return }
         loading = true
         state = await runner.refresh()
+        tokenMtime = await SetupCoordinator.shared.tokenMtime()
         loading = false
     }
 }

@@ -10,10 +10,12 @@ public struct SetupFileInfo: Equatable, Sendable {
     public var owner: String?
     public var group: String?
     public var size: Int64
+    /// Modification time, seconds since 1970 (nil when unknown).
+    public var mtime: Int?
     public init(isDirectory: Bool = false, isSymlink: Bool = false, isExecutable: Bool = false, mode: UInt16,
-                owner: String?, group: String? = nil, size: Int64 = 0) {
+                owner: String?, group: String? = nil, size: Int64 = 0, mtime: Int? = nil) {
         self.isDirectory = isDirectory; self.isSymlink = isSymlink; self.isExecutable = isExecutable
-        self.mode = mode; self.owner = owner; self.group = group; self.size = size
+        self.mode = mode; self.owner = owner; self.group = group; self.size = size; self.mtime = mtime
     }
 }
 
@@ -33,7 +35,8 @@ public struct POSIXSetupFileSystem: SetupFileSystem {
         if let gr = getgrgid(st.st_gid) { group = String(cString: gr.pointee.gr_name) }
         return SetupFileInfo(isDirectory: fmt == S_IFDIR, isSymlink: fmt == S_IFLNK,
                              isExecutable: access(path, X_OK) == 0, mode: UInt16(st.st_mode & 0o7777),
-                             owner: owner, group: group, size: Int64(st.st_size))
+                             owner: owner, group: group, size: Int64(st.st_size),
+                             mtime: Int(st.st_mtimespec.tv_sec))
     }
 }
 
@@ -78,7 +81,9 @@ public struct FoundationSetupProcessRunner: SetupProcessRunner {
 public struct SetupTokenFileInfo: Equatable, Sendable {
     public var mode: UInt16
     public var size: Int64
-    public init(mode: UInt16, size: Int64) { self.mode = mode; self.size = size }
+    /// Modification time of the token file, seconds since 1970 (nil = unknown). Input of `TokenExpiry`.
+    public var mtime: Int?
+    public init(mode: UInt16, size: Int64, mtime: Int? = nil) { self.mode = mode; self.size = size; self.mtime = mtime }
 }
 
 public protocol SetupTokenInspector: Sendable {
@@ -94,7 +99,7 @@ public struct FileSetupTokenInspector: SetupTokenInspector {
     public func tokenInfo() async throws -> SetupTokenFileInfo? {
         guard let i = fileSystem.info(at: path) else { return nil }
         if i.isSymlink || i.isDirectory { return SetupTokenFileInfo(mode: 0o777, size: i.size) }   // reported as unsafe
-        return SetupTokenFileInfo(mode: i.mode, size: i.size)
+        return SetupTokenFileInfo(mode: i.mode, size: i.size, mtime: i.mtime)
     }
 }
 
@@ -234,12 +239,14 @@ public struct ClaudeTokenProbe: SetupProbe {
     let inspector: SetupTokenInspector
     let attempts: Int
     let retryDelay: Duration
+    let now: @Sendable () -> Date
     public static let plausibleSize: ClosedRange<Int64> = 20...8192
     /// Prefix of the `failed` message when the host could not be asked (see `StepStatus.isTokenStateUnknown`).
     public static let unknownPrefix = "token state unknown"
     /// An inspector error is retried (`attempts` in total) after `retryDelay` before the state counts as unknown.
-    public init(inspector: SetupTokenInspector, attempts: Int = 2, retryDelay: Duration = .milliseconds(1500)) {
-        self.inspector = inspector; self.attempts = max(1, attempts); self.retryDelay = retryDelay
+    public init(inspector: SetupTokenInspector, attempts: Int = 2, retryDelay: Duration = .milliseconds(1500),
+                now: @escaping @Sendable () -> Date = { Date() }) {
+        self.inspector = inspector; self.attempts = max(1, attempts); self.retryDelay = retryDelay; self.now = now
     }
     public func check() async -> StepStatus {
         var info: SetupTokenFileInfo?
@@ -252,6 +259,9 @@ public struct ClaudeTokenProbe: SetupProbe {
         guard let info else { return .missing }
         guard info.mode & 0o077 == 0 else { return .failed("token file permissions must be 0600") }
         guard Self.plausibleSize.contains(info.size) else { return .failed("token file has an implausible length") }
+        // An expired token counts as missing so the plan offers the sign-in again. "Expires soon" stays done
+        // (the UI shows the remaining days via `TokenExpiry`).
+        if case .expired = TokenExpiry.status(mtime: info.mtime, now: now()) { return .missing }
         return .done
     }
 }

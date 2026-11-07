@@ -44,10 +44,20 @@ struct HostTokenInspector: SetupTokenInspector {
         case .success(let st):
             guard st.present else { return nil }
             let size = Int64(st.size ?? 0)
-            guard st.ownerOK, let mode = st.mode else { return SetupTokenFileInfo(mode: 0o777, size: size) }   // reported as unsafe
-            return SetupTokenFileInfo(mode: UInt16(mode & 0o7777), size: size)
+            guard st.ownerOK, let mode = st.mode else { return SetupTokenFileInfo(mode: 0o777, size: size, mtime: st.mtime) }   // reported as unsafe
+            return SetupTokenFileInfo(mode: UInt16(mode & 0o7777), size: size, mtime: st.mtime)
         }
     }
+}
+
+/// A freshly acquired (staged) token that is not installed yet counts as "missing" for the sign-in step, so a renewal
+/// (old token still valid or about to expire) is planned and installed like a first sign-in. Once the admin block has
+/// installed it the staged file is gone and the real probe (new file time) decides again.
+struct StagedTokenPendingProbe: SetupProbe {
+    let inner: SetupProbe
+    let acquirer: ClaudeTokenAcquirer
+    var step: SetupStep { inner.step }
+    func check() async -> StepStatus { acquirer.hasValidStagedToken() ? .missing : await inner.check() }
 }
 
 /// The app's admin block: runs `AdminInstaller` with the staged token and ALWAYS discards the staged token afterwards
@@ -139,7 +149,8 @@ final class ProductionSetup {
             RootBinaryProbe(step: .hostBinary, path: paths.hostBinary, fileSystem: fs, expectedSHA256: hashes["agentbar-host"]),
             RootBinaryProbe(step: .cli, path: paths.cliBinary, fileSystem: fs, expectedSHA256: hashes["agentbar"]),
             ClaudeCLIProbe(candidates: paths.claudeCandidates, fileSystem: fs, runner: proc),
-            ClaudeTokenProbe(inspector: HostTokenInspector(client: hostClient, expectation: expectation)),
+            StagedTokenPendingProbe(inner: ClaudeTokenProbe(inspector: HostTokenInspector(client: hostClient, expectation: expectation)),
+                                    acquirer: acquirer),
             ClaudeHooksProbe(setup: claude),
             CodexHooksProbe(setup: codex, detectionPaths: paths.codexDetectionPaths, fileSystem: fs),
             AutostartProbe(control: loginItem),
@@ -286,15 +297,22 @@ final class SetupCoordinator {
 
     private var mascot: MascotAppearance { PreferencesHub.shared.store.mascot() }
 
-    /// Opens (or fronts) the onboarding window.
-    func show() {
+    /// Opens (or fronts) the onboarding window. `page` is where a new window starts (`.login` = renew the sign-in).
+    func show(page: OnboardingModel.Page? = nil) {
         if options.demo {
             let d = DemoOnboarding.make(options.demoOnboarding ?? "welcome")
-            OnboardingWindowController.show(runner: d.runner, mascot: mascot, actions: d.actions, page: d.page)
+            OnboardingWindowController.show(runner: d.runner, mascot: mascot, actions: d.actions, page: page ?? d.page)
             return
         }
         let p = productionSetup()
-        OnboardingWindowController.show(runner: p.runner, mascot: mascot, actions: p.onboardingActions())
+        OnboardingWindowController.show(runner: p.runner, mascot: mascot, actions: p.onboardingActions(), page: page ?? .welcome)
+    }
+
+    /// Modification time (seconds since 1970) of the agent's token file, via the host. nil in demo mode, without host,
+    /// or when there is no token. Metadata only.
+    func tokenMtime() async -> Int? {
+        guard !options.demo, let hostClient else { return nil }
+        return try? await HostTokenInspector(client: hostClient).tokenInfo()?.mtime
     }
 
     /// App start: the demo flag always shows; otherwise only when `OnboardingTrigger` says so. Probes are read-only.
