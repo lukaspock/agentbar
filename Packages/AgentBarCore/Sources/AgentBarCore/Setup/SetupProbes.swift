@@ -101,7 +101,8 @@ public struct FileSetupTokenInspector: SetupTokenInspector {
 public enum SetupLoginItemState: Equatable, Sendable { case enabled, notRegistered, requiresApproval, notFound }
 public protocol SetupLoginItemControlling: Sendable { func state() async -> SetupLoginItemState }
 
-public enum SetupNotificationState: Equatable, Sendable { case authorized, denied, notDetermined }
+/// `unavailable`: the system refuses notifications for this build altogether (e.g. ad-hoc signed app, UNErrorDomain code 1).
+public enum SetupNotificationState: Equatable, Sendable { case authorized, denied, notDetermined, unavailable }
 public protocol SetupNotificationAuthorizing: Sendable { func authorizationState() async -> SetupNotificationState }
 
 // MARK: - Paths
@@ -193,13 +194,23 @@ public struct AgentUserProbe: SetupProbe {
 public struct RootBinaryProbe: SetupProbe {
     public let step: SetupStep
     let path: String; let fs: SetupFileSystem
-    public init(step: SetupStep, path: String, fileSystem: SetupFileSystem) { self.step = step; self.path = path; self.fs = fileSystem }
+    let expectedSHA256: String?
+    /// SHA-256 (hex) of the installed file; nil = unreadable. Only used when `expectedSHA256` is set.
+    let hashOf: @Sendable (String) -> String?
+    /// `expectedSHA256` (hash of the binary bundled with the app): an installed file with a different hash is outdated and
+    /// counts as `missing`, so the admin block replaces it (and restarts the daemon). Without it only owner/mode are checked.
+    public init(step: SetupStep, path: String, fileSystem: SetupFileSystem, expectedSHA256: String? = nil,
+                hashOf: @escaping @Sendable (String) -> String? = { p in
+                    FileManager.default.contents(atPath: p).map { AdminManifest.sha256Hex(of: $0) } }) {
+        self.step = step; self.path = path; self.fs = fileSystem; self.expectedSHA256 = expectedSHA256; self.hashOf = hashOf
+    }
     public func check() async -> StepStatus {
         guard let i = fs.info(at: path) else { return .missing }
         guard !i.isDirectory, !i.isSymlink else { return .failed("\(path) is not a regular file") }
         guard i.owner == "root" else { return .failed("\(path) is owned by \(i.owner ?? "?"), expected root") }
         guard i.mode & 0o022 == 0 else { return .failed("\(path) is group/world-writable") }
         guard i.isExecutable else { return .failed("\(path) is not executable") }
+        if let expectedSHA256, hashOf(path) != expectedSHA256 { return .missing }   // outdated: replaced by the admin block
         return .done
     }
 }
@@ -221,11 +232,23 @@ public struct ClaudeCLIProbe: SetupProbe {
 public struct ClaudeTokenProbe: SetupProbe {
     public let step = SetupStep.claudeToken
     let inspector: SetupTokenInspector
+    let attempts: Int
+    let retryDelay: Duration
     public static let plausibleSize: ClosedRange<Int64> = 20...8192
-    public init(inspector: SetupTokenInspector) { self.inspector = inspector }
+    /// Prefix of the `failed` message when the host could not be asked (see `StepStatus.isTokenStateUnknown`).
+    public static let unknownPrefix = "token state unknown"
+    /// An inspector error is retried (`attempts` in total) after `retryDelay` before the state counts as unknown.
+    public init(inspector: SetupTokenInspector, attempts: Int = 2, retryDelay: Duration = .milliseconds(1500)) {
+        self.inspector = inspector; self.attempts = max(1, attempts); self.retryDelay = retryDelay
+    }
     public func check() async -> StepStatus {
-        let info: SetupTokenFileInfo?
-        do { info = try await inspector.tokenInfo() } catch { return .failed("token state unknown: \(error)") }
+        var info: SetupTokenFileInfo?
+        var lastError: Error?
+        for attempt in 0..<attempts {
+            if attempt > 0 { try? await Task.sleep(for: retryDelay) }
+            do { info = try await inspector.tokenInfo(); lastError = nil; break } catch { lastError = error }
+        }
+        if let lastError { return .failed("\(Self.unknownPrefix): \(lastError)") }
         guard let info else { return .missing }
         guard info.mode & 0o077 == 0 else { return .failed("token file permissions must be 0600") }
         guard Self.plausibleSize.contains(info.size) else { return .failed("token file has an implausible length") }
@@ -276,7 +299,8 @@ public struct NotificationsProbe: SetupProbe {
         switch await auth.authorizationState() {
         case .authorized: return .done
         case .notDetermined: return .missing
-        case .denied: return .failed("notifications are denied in System Settings")
+        case .denied: return .notApplicable("Off in System Settings")
+        case .unavailable: return .notApplicable("Not available in this build")
         }
     }
 }

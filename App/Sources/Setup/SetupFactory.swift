@@ -3,18 +3,43 @@ import AgentBarCore
 
 // MARK: - Adapters
 
+/// Set by the admin block when it has just (re)installed or restarted the daemon: the host connection is then about to
+/// come back, so the token inspector waits for it (up to `window`) instead of reporting "no host" right away.
+final class HostExpectation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var until = Date.distantPast
+    func expect(for window: TimeInterval) { lock.lock(); until = Date().addingTimeInterval(window); lock.unlock() }
+    var remaining: TimeInterval { lock.lock(); defer { lock.unlock() }; return max(0, until.timeIntervalSinceNow) }
+}
+
 /// `SetupTokenInspector` over the host op `tokenstatus` (metadata only; the owner cannot read the agent home).
-/// No host connection means the agent user is not running yet, so there is no token to find: reported as absent.
+/// No host connection while none is expected means the agent user is not running yet: reported as absent. Right after the
+/// admin block the connection is awaited (up to ~10 s) and a dropped request is retried once.
 struct HostTokenInspector: SetupTokenInspector {
     let client: HostClient?
+    var expectation: HostExpectation? = nil
+    var connectWait: TimeInterval = 10
+
+    private func request(_ client: HostClient) async -> Result<HostTokenStatus, HostError> {
+        await withCheckedContinuation { cont in client.tokenStatus { cont.resume(returning: $0) } }
+    }
 
     func tokenInfo() async throws -> SetupTokenFileInfo? {
         guard let client else { return nil }
-        let result: Result<HostTokenStatus, HostError> = await withCheckedContinuation { cont in
-            client.tokenStatus { cont.resume(returning: $0) }
+        let expected = expectation?.remaining ?? 0
+        if expected > 0, !client.isConnected { _ = await client.waitUntilConnected(timeout: min(connectWait, expected)) }
+        var result = await request(client)
+        if expected > 0 {
+            switch result {   // the daemon may still be reconnecting: wait once more and ask again
+            case .failure(.notConnected), .failure(.disconnected):
+                if await client.waitUntilConnected(timeout: connectWait) { result = await request(client) }
+            default: break
+            }
         }
         switch result {
-        case .failure(.notConnected), .failure(.disconnected): return nil
+        case .failure(.notConnected), .failure(.disconnected):
+            if expected > 0 { throw HostError.notConnected }   // expected to be up but is not: unknown, not "absent"
+            return nil
         case .failure(let e): throw e
         case .success(let st):
             guard st.present else { return nil }
@@ -29,14 +54,18 @@ struct HostTokenInspector: SetupTokenInspector {
 /// (the installer removes the file as well).
 final class OnboardingAdminBlock: SetupAdminBlock, @unchecked Sendable {
     private let acquirer: ClaudeTokenAcquirer
+    private let hostExpectation: HostExpectation?
 
-    init(acquirer: ClaudeTokenAcquirer) { self.acquirer = acquirer }
+    init(acquirer: ClaudeTokenAcquirer, hostExpectation: HostExpectation? = nil) {
+        self.acquirer = acquirer; self.hostExpectation = hostExpectation
+    }
 
     func run(steps: [SetupStep], progress: @Sendable (String) -> Void) async throws {
         let acquirer = self.acquirer
         let installer = AdminInstaller(tokenFile: { acquirer.stagedTokenPath.map { URL(fileURLWithPath: $0) } })
         defer { acquirer.discardStaged() }
         try await installer.run(steps: steps, progress: progress)
+        hostExpectation?.expect(for: 30)   // daemon was installed/restarted: its connection is about to come back
     }
 }
 
@@ -100,15 +129,17 @@ final class ProductionSetup {
         claudeSetup = HookSetup(agentbarPath: cli)
         codexSetup = CodexHookSetup(agentbarPath: cli)
         let claude = claudeSetup, codex = codexSetup, box = hooksBox
-        admin = OnboardingAdminBlock(acquirer: acquirer)
+        let expectation = HostExpectation()
+        admin = OnboardingAdminBlock(acquirer: acquirer, hostExpectation: expectation)
+        let hashes = Self.bundledHashes()
         let loginItem = LoginItemController()
 
         let probes: [SetupProbe] = [
             AgentUserProbe(paths: paths, fileSystem: fs, runner: proc),
-            RootBinaryProbe(step: .hostBinary, path: paths.hostBinary, fileSystem: fs),
-            RootBinaryProbe(step: .cli, path: paths.cliBinary, fileSystem: fs),
+            RootBinaryProbe(step: .hostBinary, path: paths.hostBinary, fileSystem: fs, expectedSHA256: hashes["agentbar-host"]),
+            RootBinaryProbe(step: .cli, path: paths.cliBinary, fileSystem: fs, expectedSHA256: hashes["agentbar"]),
             ClaudeCLIProbe(candidates: paths.claudeCandidates, fileSystem: fs, runner: proc),
-            ClaudeTokenProbe(inspector: HostTokenInspector(client: hostClient)),
+            ClaudeTokenProbe(inspector: HostTokenInspector(client: hostClient, expectation: expectation)),
             ClaudeHooksProbe(setup: claude),
             CodexHooksProbe(setup: codex, detectionPaths: paths.codexDetectionPaths, fileSystem: fs),
             AutostartProbe(control: loginItem),
@@ -133,6 +164,14 @@ final class ProductionSetup {
         let useAgent = store.string(forKey: Self.useAgentUserKey) != "0"
         runner = SetupRunner(probes: probes, actions: actions, adminBlock: admin, tokenAcquirer: acquirer,
                              store: store, useAgentUser: useAgent)
+    }
+
+    /// SHA-256 of the binaries bundled with the app (build-time manifest). Empty when there is no payload (debug builds).
+    private static func bundledHashes() -> [String: String] {
+        let dir = (Bundle.main.resourceURL ?? URL(fileURLWithPath: "/")).appendingPathComponent(AdminInstallerSpec.payloadFolder, isDirectory: true)
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("manifest.json")),
+              let m = try? AdminManifest(parsing: data) else { return [:] }
+        return m.files
     }
 
     var snoozedUntil: Date? { store.string(forKey: Self.snoozedUntilKey).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) } }

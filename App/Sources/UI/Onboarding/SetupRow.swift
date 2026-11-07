@@ -80,6 +80,7 @@ struct SetupRow: View {
     private var detail: String {
         if state.skipped { return "Skipped" }
         if case .running = state.status, let last = state.log.last { return last }
+        if case .notApplicable(let m) = state.status, step.isOptional { return m }
         return step.onboardingDetail
     }
 

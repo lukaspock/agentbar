@@ -6,6 +6,9 @@ public enum SetupStep: String, CaseIterable, Codable, Sendable {
 
     /// Steps that are carried out by the single privileged (admin) block.
     public var isAdminStep: Bool { self == .agentUser || self == .hostBinary || self == .cli }
+
+    /// Nice-to-have steps: they never end `failed` and never block "Continue" (a denied or unavailable permission is just "off").
+    public var isOptional: Bool { self == .notifications }
 }
 
 public enum StepStatus: Equatable, Sendable {
@@ -14,6 +17,12 @@ public enum StepStatus: Equatable, Sendable {
     case notApplicable(String)
     case failed(String)
     case running
+
+    /// The token probe could not ask the host (not "no token"): the file may well be there.
+    public var isTokenStateUnknown: Bool {
+        if case .failed(let m) = self { return m.hasPrefix("token state unknown") }
+        return false
+    }
 
     /// True when the step still needs work (missing or failed). `running` and `notApplicable` are not open.
     public var isOpen: Bool {

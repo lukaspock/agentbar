@@ -100,6 +100,16 @@ public final class HostClient: @unchecked Sendable {
         }
     }
 
+    /// Waits (polling) until a host is connected; false after `timeout`. Used right after the daemon was (re)installed.
+    public func waitUntilConnected(timeout: TimeInterval) async -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while !isConnected {
+            if Date() >= end || Task.isCancelled { return isConnected }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return true
+    }
+
     /// SIGTERM to every running agent process group (the "stop all" menu item). Does not wait.
     public func terminateAll() {
         lock.lock(); let ps = Array(procs.values); lock.unlock()
@@ -244,6 +254,12 @@ public final class HostClient: @unchecked Sendable {
             if let rid, let p = takePending(rid) { p.finish(.failure(.host(msg))) }
             else if let id, let p = process(id) { if p.hostError(msg) { forget(id) } }
             else if rid != nil || id != nil { dropped() }
+            else {
+                // Frame-level error without ids ("malformed or unknown frame"): a host that predates a request type answers like
+                // this and never replies to it. Fail the open requests now instead of letting them run into the timeout.
+                lock.lock(); let all = Array(pending.values); pending = [:]; lock.unlock()
+                for q in all { q.finish(.failure(.host(msg))) }
+            }
         }
     }
 

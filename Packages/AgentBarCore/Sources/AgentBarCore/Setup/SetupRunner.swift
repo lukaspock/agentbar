@@ -94,7 +94,13 @@ public actor SetupRunner: SetupRunning {
     private func check(_ step: SetupStep) async {
         if !useAgentUser, SetupState.agentOnly.contains(step) { statuses[step] = .notApplicable("local mode"); return }
         guard let p = probes[step] else { statuses[step] = .notApplicable("no probe configured"); return }
-        statuses[step] = await p.check()
+        statuses[step] = Self.normalized(step, await p.check())
+    }
+
+    /// Optional steps (notifications) never stay `failed`: the problem is shown as a neutral "off".
+    private static func normalized(_ step: SetupStep, _ s: StepStatus) -> StepStatus {
+        if step.isOptional, case .failed(let m) = s { return .notApplicable(m) }
+        return s
     }
 
     // MARK: running
@@ -148,13 +154,20 @@ public actor SetupRunner: SetupRunning {
         await verify(step, failure: failure, progress)
     }
 
-    private func verify(_ step: SetupStep, failure: String?, _ progress: @Sendable (SetupEvent) -> Void) async {
+    /// `installerSucceeded`: the admin block ran through without error for this step. The token is then root-verified in
+    /// place, so a probe that merely could not ask the host ("unknown") must not turn the row red.
+    private func verify(_ step: SetupStep, failure: String?, installerSucceeded: Bool = false,
+                        _ progress: @Sendable (SetupEvent) -> Void) async {
         guard let probe = probes[step] else { finish(step, failure.map { .failed($0) } ?? .done, progress); return }
-        let s = await probe.check()
+        let s = Self.normalized(step, await probe.check())
         switch s {
         case .done, .notApplicable: finish(step, s, progress)
-        case .failed(let m): finish(step, .failed(failure ?? m), progress)
-        case .missing, .running: finish(step, .failed(failure ?? "still not set up after running"), progress)
+        case .failed(let m):
+            if installerSucceeded, failure == nil, s.isTokenStateUnknown { finish(step, .done, progress) }
+            else { finish(step, .failed(failure ?? m), progress) }
+        case .missing, .running:
+            if step.isOptional { finish(step, .notApplicable(failure ?? "Not available in this build"), progress) }
+            else { finish(step, .failed(failure ?? "still not set up after running"), progress) }
         }
     }
 
@@ -175,7 +188,7 @@ public actor SetupRunner: SetupRunning {
             do { try await admin.run(steps: steps, progress: { msg in steps.forEach { progress(.message($0, msg)) } }) }
             catch { failure = "\(error)" }
         } else { failure = SetupError.noAdminHandler.description }
-        for s in steps { await verify(s, failure: failure, progress) }
+        for s in steps { await verify(s, failure: failure, installerSucceeded: s == .claudeToken, progress) }
         // The token cannot be valid without the agent user, whatever its own probe says.
         if steps.contains(.claudeToken), statuses[.claudeToken] == .done, statuses[.agentUser] != .done {
             finish(.claudeToken, .failed("requires \(SetupStep.agentUser.rawValue)"), progress)

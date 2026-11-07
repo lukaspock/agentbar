@@ -23,6 +23,7 @@ struct DonePage: View {
             VStack(spacing: 8) {
                 toggleRow("Launch at login", isOn: $model.autostart)
                 toggleRow("Notify me when an agent needs input", isOn: $model.notifications)
+                    .disabled(!model.notificationsAvailable)
             }
             .frame(maxWidth: 380)
 

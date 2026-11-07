@@ -86,7 +86,7 @@ final class OnboardingModel: ObservableObject {
     var visibleSteps: [SetupStep] {
         guard let state else { return [] }
         return Self.order.filter { step in
-            if case .notApplicable = state.status(of: step) { return false }
+            if case .notApplicable = state.status(of: step) { return step == .notifications }   // shown neutral: "off / not available"
             return true
         }
     }
@@ -95,6 +95,12 @@ final class OnboardingModel: ObservableObject {
         var r = rows[step] ?? RowState(status: state?.status(of: step) ?? .missing)
         if state?.options.skippedSteps.contains(step) == true { r.skipped = true }
         return r
+    }
+
+    /// false when the system refuses notifications for this build; the switch on the last page is then off and disabled.
+    var notificationsAvailable: Bool {
+        if case .notApplicable(let m)? = state?.status(of: .notifications) { return !m.hasPrefix("Not available") }
+        return true
     }
 
     var hasUnresolvedFailure: Bool {

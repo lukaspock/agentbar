@@ -243,7 +243,49 @@ final class SetupTests: XCTestCase {
         var n = await NotificationsProbe(auth: N(s: .authorized)).check(); XCTAssertEqual(n, .done)
         n = await NotificationsProbe(auth: N(s: .notDetermined)).check(); XCTAssertEqual(n, .missing)
         n = await NotificationsProbe(auth: N(s: .denied)).check()
-        if case .failed = n {} else { XCTFail("denied -> failed") }
+        if case .notApplicable = n {} else { XCTFail("denied -> neutral, got \(n)") }
+        n = await NotificationsProbe(auth: N(s: .unavailable)).check()
+        XCTAssertEqual(n, .notApplicable("Not available in this build"))
+        XCTAssertFalse(n.isOpen)
+    }
+
+    func testOptionalStepNeverEndsFailed() async {
+        let w = World()
+        let probes = SetupStep.allCases.map { WorldProbe(step: $0, world: w) as SetupProbe }
+        struct Throwing: SetupAction { let step = SetupStep.notifications
+            func run(progress: @Sendable (String) -> Void) async throws { throw Boom() } }
+        let r = SetupRunner(probes: probes, actions: [Throwing()], store: InMemorySetupStore(), useAgentUser: false)
+        _ = await r.run(step: .notifications)
+        let st = await r.state()
+        if case .notApplicable = st.status(of: .notifications) {} else { XCTFail("got \(st.status(of: .notifications))") }
+        XCTAssertFalse(st.status(of: .notifications).isOpen)
+    }
+
+    func testRootBinaryProbeOutdatedHashIsMissing() async {
+        let fs = FakeFS()
+        fs.files["/b"] = .init(isDirectory: false, isExecutable: true, mode: 0o755, owner: "root")
+        var p = await RootBinaryProbe(step: .hostBinary, path: "/b", fileSystem: fs, expectedSHA256: "aa", hashOf: { _ in "bb" }).check()
+        XCTAssertEqual(p, .missing)
+        p = await RootBinaryProbe(step: .hostBinary, path: "/b", fileSystem: fs, expectedSHA256: "aa", hashOf: { _ in "aa" }).check()
+        XCTAssertEqual(p, .done)
+        p = await RootBinaryProbe(step: .hostBinary, path: "/b", fileSystem: fs).check()
+        XCTAssertEqual(p, .done)
+    }
+
+    func testTokenProbeRetriesThenReportsUnknown() async {
+        final class Counter: @unchecked Sendable { var n = 0 }
+        struct Flaky: SetupTokenInspector { let c: Counter; let failures: Int
+            func tokenInfo() async throws -> SetupTokenFileInfo? {
+                c.n += 1
+                if c.n <= failures { throw Boom() }
+                return SetupTokenFileInfo(mode: 0o600, size: 108)
+            } }
+        let c1 = Counter()
+        var s = await ClaudeTokenProbe(inspector: Flaky(c: c1, failures: 1), attempts: 2, retryDelay: .zero).check()
+        XCTAssertEqual(s, .done); XCTAssertEqual(c1.n, 2)
+        let c2 = Counter()
+        s = await ClaudeTokenProbe(inspector: Flaky(c: c2, failures: 9), attempts: 2, retryDelay: .zero).check()
+        XCTAssertTrue(s.isTokenStateUnknown, "\(s)"); XCTAssertTrue(s.isOpen); XCTAssertEqual(c2.n, 2)
     }
 
     func testPOSIXFileSystemReportsModeAndMissing() throws {
@@ -325,6 +367,38 @@ final class SetupTests: XCTestCase {
         XCTAssertEqual(w.adminRuns.count, 1, "second run is a no-op")
         XCTAssertEqual(w.acquireRuns, 1)
         XCTAssertEqual(w.actionRuns.count, 5)
+    }
+
+    func testUnknownTokenStateIsPlannedAsAcquireBeforeAdmin() {
+        var st = all(.done)
+        st[.agentUser] = .missing
+        st[.claudeToken] = .failed("token state unknown: timeout")
+        let plan = SetupState(statuses: st).plan
+        let acq = plan.firstIndex(of: .init(step: .claudeToken, phase: .acquire))
+        let adm = plan.firstIndex(of: .init(step: .agentUser, phase: .admin))
+        XCTAssertNotNil(acq); XCTAssertNotNil(adm)
+        XCTAssertLessThan(acq!, adm!)
+        XCTAssertTrue(plan.contains(.init(step: .claudeToken, phase: .admin)))
+    }
+
+    func testUnknownTokenStateRunsAcquireFirstAndGoesGreenAfterInstaller() async {
+        final class Order: @unchecked Sendable { var log: [String] = [] }
+        let o = Order()
+        let w = World()
+        struct Unknown: SetupProbe { let step = SetupStep.claudeToken
+            func check() async -> StepStatus { .failed("token state unknown: timeout") } }
+        struct Acq: SetupTokenAcquirer { let o: Order; func acquire(progress: @Sendable (String) -> Void) async throws { o.log.append("acquire") } }
+        struct Adm: SetupAdminBlock { let o: Order; let w: World
+            func run(steps: [SetupStep], progress: @Sendable (String) -> Void) async throws {
+                o.log.append("admin:" + steps.map(\.rawValue).joined(separator: ","))
+                steps.filter { $0 != .claudeToken }.forEach { w.markDone($0) } } }
+        var probes = SetupStep.allCases.filter { $0 != .claudeToken }.map { WorldProbe(step: $0, world: w) as SetupProbe }
+        probes.append(Unknown())
+        let actions = [SetupStep.claudeCLI, .claudeHooks, .codexHooks, .autostart, .notifications].map { WorldAction(step: $0, world: w) as SetupAction }
+        let r = SetupRunner(probes: probes, actions: actions, adminBlock: Adm(o: o, w: w), tokenAcquirer: Acq(o: o), store: InMemorySetupStore())
+        let st = await r.runAll()
+        XCTAssertEqual(o.log, ["acquire", "admin:agentUser,hostBinary,cli,claudeToken"], "token first, then ONE admin block with the token")
+        XCTAssertEqual(st.status(of: .claudeToken), .done, "unknown after a successful installer is not red")
     }
 
     func testTokenIsAcquiredBeforeAdminBlock() async {
