@@ -177,8 +177,12 @@ public final class ClaudeTokenAcquirer: SetupTokenAcquirer, @unchecked Sendable 
             let m = String(cString: strerror(errno)); close(master); return .failure(AcquireError.ptyFailed(m))
         }
         let slavePath = String(cString: namePtr)
+        // The window size is set through a slave fd that stays open until the child has opened the terminal itself:
+        // on macOS the size is lost when the last slave fd closes, and setting it on the master alone did not stick.
         var ws = winsize(ws_row: 50, ws_col: Self.columns, ws_xpixel: 0, ws_ypixel: 0)
-        _ = ioctl(master, TIOCSWINSZ, &ws)
+        let keepSlave = open(slavePath, O_RDWR | O_NOCTTY | O_CLOEXEC)
+        if keepSlave >= 0 { _ = ioctl(keepSlave, TIOCSWINSZ, &ws) } else { _ = ioctl(master, TIOCSWINSZ, &ws) }
+        defer { if keepSlave >= 0 { close(keepSlave) } }
 
         var fa: posix_spawn_file_actions_t? = nil
         posix_spawn_file_actions_init(&fa); defer { posix_spawn_file_actions_destroy(&fa) }
@@ -211,14 +215,28 @@ public final class ClaudeTokenAcquirer: SetupTokenAcquirer, @unchecked Sendable 
             let r = waitpid(pid, &st, block ? 0 : WNOHANG)
             if r == pid { exited = true; exitStatus = st }
         }
+        /// Discards pending child output. A child with unread output cannot finish exiting (the tty close waits for the
+        /// master to drain), so this must run while waiting for it.
+        var sink = [UInt8](repeating: 0, count: 4096)
+        func drain() {
+            var p = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+            while poll(&p, 1, 0) > 0, p.revents & Int16(POLLIN) != 0 {
+                if sink.withUnsafeMutableBytes({ read(master, $0.baseAddress, $0.count) }) <= 0 { break }
+            }
+        }
         func finish() {
             if !exited {
                 killpg(pid, SIGTERM)
-                let end = Date().addingTimeInterval(1.0)
-                while Date() < end { reap(block: false); if exited { break }; usleep(20_000) }
-                if !exited { killpg(pid, SIGKILL); reap(block: true) }
+                var end = Date().addingTimeInterval(1.0)
+                while Date() < end { drain(); reap(block: false); if exited { break }; usleep(20_000) }
+                if !exited {
+                    killpg(pid, SIGKILL)
+                    end = Date().addingTimeInterval(3.0)
+                    while Date() < end { drain(); reap(block: false); if exited { break }; usleep(20_000) }
+                }
             }
             close(master)
+            if !exited { reap(block: false) }   // never block forever on an unkillable child
             lock.lock(); childPid = 0; lock.unlock()
         }
 
@@ -262,7 +280,8 @@ public final class ClaudeTokenAcquirer: SetupTokenAcquirer, @unchecked Sendable 
                     return .success(t)
                 }
                 if exited {
-                    let status = exitStatus
+                    // wait status -> exit code (or the signal number for a killed child)
+                    let status: Int32 = (exitStatus & 0x7f) == 0 ? (exitStatus >> 8) & 0xff : exitStatus & 0x7f
                     finish()
                     return .failure(AcquireError.exitedWithoutToken(status))
                 }
