@@ -21,16 +21,12 @@ struct SetupProgressPage: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            OnboardingHeader(title: "Setting things up", sentence: model.migrationOffer
-                             ? "An older agent account exists. Migrate it to continue."
-                             : model.hasUnresolvedFailure
+            OnboardingHeader(title: "Setting things up", sentence: model.hasUnresolvedFailure
                              ? "Something needs attention. Retry it or skip it for now."
                              : "This only takes a moment.") {
                 BlobView(state: heroState, kind: model.mascotKind, size: 44, tint: model.mascotColor, seed: "setup")
                     .frame(width: 54, height: 54)
             }
-            // Pinned above the list so it can never scroll out of sight.
-            if model.migrationOffer { migrationCard.padding(.horizontal, 28) }
             ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 10) {
@@ -54,22 +50,6 @@ struct SetupProgressPage: View {
         .padding(.top, 6)
         .animation(reduceMotion ? nil : BarTheme.spring, value: model.visibleSteps)
         .task { await model.runSetupIfNeeded() }
-    }
-
-    private var migrationCard: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle.badge.questionmark").font(.system(size: 16)).foregroundStyle(OnboardingStyle.secondaryText)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Existing agent account found").font(.system(size: 13, weight: .medium)).foregroundStyle(OnboardingStyle.primaryText)
-                Text("Migrate it to the new setup?").font(.system(size: 11)).foregroundStyle(OnboardingStyle.secondaryText)
-            }
-            Spacer(minLength: 8)
-            Button("Migrate") { Task { await model.migrate() } }
-                .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(OnboardingStyle.primaryText)
-                .disabled(model.running)
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(OnboardingStyle.card))
     }
 
     /// Steps ordered before the admin group (the Claude CLI comes first).

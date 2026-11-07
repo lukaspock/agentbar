@@ -5,15 +5,17 @@
 # Normally started by the app through ONE admin prompt (App/Sources/Setup/AdminInstaller.swift), from a
 # root-owned, hash-verified staging copy. Can also be run by hand:
 #   sudo Scripts/setup-agent-user.sh --owner NAME [--host-binary PATH] [--cli-binary PATH]
-#                                    [--token-file PATH] [--steps LIST] [--migrate] [--dry-run]
+#                                    [--token-file PATH] [--steps LIST] [--dry-run]
 # --dry-run prints what would happen, changes nothing and needs no root.
 #
 # Progress: JSON lines are appended to /Library/Application Support/AgentBar/setup-status.jsonl (root-owned,
 # world-readable) so the app can show progress while the admin prompt is open. Fixed path, not an argument.
 #
-# The account is a ROLE account (like _www): dscl record, UID in 200..399 (hidden), shell /usr/bin/false,
-# no password, no login. An existing account (e.g. an old sysadminctl user, uid 502) is never deleted
-# silently: without --migrate the script stops (exit 20); with --migrate it converts it in place.
+# A NEW account is a ROLE account (like _www): dscl record, UID in 200..399 (hidden), shell /usr/bin/false,
+# no password, no login. An EXISTING account (e.g. an old sysadminctl user, uid 502) is ADOPTED: its UniqueID
+# is never changed (macOS refuses that with eDSPermissionError -14120). It is hardened best effort (hidden,
+# shell /usr/bin/false, password '*', no AuthenticationAuthority); a failed hardening step only warns.
+# --migrate is accepted for older callers and ignored.
 set -euo pipefail
 
 AGENT_USER="agentbar"
@@ -31,7 +33,6 @@ STATUS_DIR="/Library/Application Support/AgentBar"
 STATUS_FILE="${STATUS_DIR}/setup-status.jsonl"
 UID_MIN=200
 UID_MAX=399
-EXIT_LEGACY=20
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="${SCRIPT_DIR}/${LABEL}.plist.template"
@@ -39,7 +40,7 @@ cd /   # avoid cwd problems when running commands as another user
 umask 022
 
 DRY_RUN=0
-MIGRATE=0
+WARN_MIGRATE=0
 OWNER=""
 HOST_SRC=""
 CLI_SRC=""
@@ -60,7 +61,7 @@ Usage: sudo $0 --owner NAME [options]
   --token-file PATH   short-lived 0600 file holding the Claude token; moved into the agent home, source deleted
   --steps LIST        comma list of agentUser,hostBinary,cli,claudeToken (default: all)
   --run-id ID         tag for status lines (set by the app)
-  --migrate           convert an existing login account 'agentbar' into the role account (never silent)
+  --migrate           deprecated, ignored (an existing account is adopted without changing its UID)
   --dry-run           only print actions, change nothing (works without root)
   -h, --help          show this help
 USAGE
@@ -99,7 +100,7 @@ run() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
-    --migrate) MIGRATE=1 ;;
+    --migrate) WARN_MIGRATE=1 ;;
     --owner) [[ $# -ge 2 ]] || die "--owner needs a value"; OWNER="$2"; shift ;;
     --owner=*) OWNER="${1#*=}" ;;
     --host-binary) [[ $# -ge 2 ]] || die "--host-binary needs a value"; HOST_SRC="$2"; shift ;;
@@ -123,6 +124,7 @@ if [[ $DRY_RUN -eq 0 && $EUID -ne 0 ]]; then
   die "must run as root (use sudo), or pass --dry-run"
 fi
 [[ $DRY_RUN -eq 1 ]] && printf 'DRY RUN: nothing will be changed.\n'
+[[ $WARN_MIGRATE -eq 1 ]] && printf 'note: --migrate is deprecated and ignored; an existing account is adopted as is.\n'
 
 # Status file: root-owned dir under /Library (not the sticky /tmp), recreated per run.
 if [[ $DRY_RUN -eq 0 ]]; then
@@ -156,7 +158,7 @@ is_member()     { dseditgroup -o checkmember -m "$1" "$2" >/dev/null 2>&1; }
 daemon_loaded() { launchctl print "system/${LABEL}" >/dev/null 2>&1; }
 dscl_value()    { dscl . -read "/Users/${AGENT_USER}" "$1" 2>/dev/null | awk -v k="$1:" '$1==k {print $2}' | head -n 1; }
 
-# ---------------------------------------------------------------- helpers: UID, migration
+# ---------------------------------------------------------------- helpers: UID
 # Next free UID in the role range: highest used UID in the range + 1; if the range top is reached, first gap.
 pick_uid() {
   local used u max=$((UID_MIN - 1)) cand
@@ -174,29 +176,14 @@ pick_uid() {
   printf '%s\n' "$cand"
 }
 
-stop_daemon_and_agent() {
-  if daemon_loaded; then run launchctl bootout "system/${LABEL}" || true; fi
-  if pgrep -u "$AGENT_USER" >/dev/null 2>&1; then
-    run pkill -TERM -u "$AGENT_USER" || true
-    [[ $DRY_RUN -eq 1 ]] || sleep 1
-    run pkill -KILL -u "$AGENT_USER" || true
-  fi
-}
-
 # ================================================================ step: agentUser
 if want agentUser; then
   begin_step agentUser "role account '${AGENT_USER}'"
-  legacy=0
   if user_exists; then
     cur_uid="$(dscl_value UniqueID)"; cur_shell="$(dscl_value UserShell)"
     info "existing account: uid ${cur_uid:-?}, shell ${cur_shell:-?}"
     if [[ ! "$cur_uid" =~ ^[0-9]+$ ]]; then die "existing account has no numeric UniqueID"; fi
     [[ "$cur_uid" -ge 100 ]] || die "refusing: UID ${cur_uid} is a system account"
-    if [[ "$cur_uid" -gt $UID_MAX || "$cur_shell" != "/usr/bin/false" ]]; then legacy=1; fi
-    if [[ $legacy -eq 1 && $MIGRATE -eq 0 ]]; then
-      emit agentUser failed "existing login account '${AGENT_USER}' (uid ${cur_uid}); not changed. Re-run with --migrate to convert it into a role account (daemon and its processes will be stopped)." >&2
-      exit $EXIT_LEGACY
-    fi
     if is_member "$AGENT_USER" admin; then die "'${AGENT_USER}' is an admin; remove it from the admin group first"; fi
   fi
 
@@ -215,37 +202,25 @@ if want agentUser; then
       dscl . -create "/Users/${AGENT_USER}" GeneratedUID "$(uuidgen)"
       dscacheutil -flushcache 2>/dev/null || true
     fi
-  elif [[ $legacy -eq 1 ]]; then
-    new_uid="$cur_uid"
-    if [[ "$cur_uid" -gt $UID_MAX ]]; then new_uid="$(pick_uid)"; fi
-    info "migrating '${AGENT_USER}' (uid ${cur_uid}) to role account (uid ${new_uid})"
-    # Preflight: prove the directory service accepts writes to this record BEFORE anything is stopped
-    # (macOS may answer eDSPermissionError even for root, depending on the calling process).
-    run dscl . -create "/Users/${AGENT_USER}" UserShell "${cur_shell:-/bin/zsh}" \
-      || die "the directory service refused a write to '${AGENT_USER}' (eDSPermissionError?); nothing was changed"
-    was_loaded=0; daemon_loaded && was_loaded=1
-    stop_daemon_and_agent
-    # From here on a failure must not leave the host daemon stopped.
-    mig() {
-      run "$@" || {
-        [[ $was_loaded -eq 1 ]] && launchctl bootstrap system "$PLIST_DST" >/dev/null 2>&1 || true
-        die "account change failed (daemon restarted, account left as is): $*"
-      }
-    }
-    mig dscl . -create "/Users/${AGENT_USER}" UniqueID "$new_uid"
-    mig dscl . -create "/Users/${AGENT_USER}" UserShell /usr/bin/false
-    mig dscl . -create "/Users/${AGENT_USER}" Password '*'
-    mig dscl . -create "/Users/${AGENT_USER}" IsHidden 1
-    run dscl . -delete "/Users/${AGENT_USER}" AuthenticationAuthority || true
-    run dscl . -delete "/Users/${AGENT_USER}" PasswordPolicyOptions || true
-    if [[ $DRY_RUN -eq 0 ]]; then
-      dscacheutil -flushcache 2>/dev/null || true
-      # The old UID owned everything in the home; hand it to the new UID (no symlink following).
-      [[ -d "$AGENT_HOME" && ! -L "$AGENT_HOME" ]] && chown -R -P "${AGENT_USER}:staff" "$AGENT_HOME"
-    fi
   else
-    info "role account exists (uid ${cur_uid}), nothing to create"
-    [[ "$(dscl_value IsHidden)" == "1" ]] || run dscl . -create "/Users/${AGENT_USER}" IsHidden 1
+    # Adopt: the UniqueID stays as it is. Every hardening write stands alone; a refusal only warns, and
+    # nothing is stopped because of it (the daemon keeps running).
+    info "adopting existing account '${AGENT_USER}' (uid ${cur_uid}); UID unchanged"
+    [[ "$(dscl_value IsHidden)" == "1" ]] || run dscl . -create "/Users/${AGENT_USER}" IsHidden 1 \
+      || warn "could not hide '${AGENT_USER}' (directory service refused)"
+    [[ "$cur_shell" == "/usr/bin/false" ]] || run dscl . -create "/Users/${AGENT_USER}" UserShell /usr/bin/false \
+      || warn "could not set the shell of '${AGENT_USER}' to /usr/bin/false"
+    run dscl . -create "/Users/${AGENT_USER}" Password '*' \
+      || warn "could not set the password of '${AGENT_USER}' to '*'"
+    if dscl . -read "/Users/${AGENT_USER}" AuthenticationAuthority >/dev/null 2>&1; then
+      run dscl . -delete "/Users/${AGENT_USER}" AuthenticationAuthority \
+        || warn "could not remove AuthenticationAuthority of '${AGENT_USER}'"
+    fi
+    if dscl . -read "/Users/${AGENT_USER}" PasswordPolicyOptions >/dev/null 2>&1; then
+      run dscl . -delete "/Users/${AGENT_USER}" PasswordPolicyOptions \
+        || warn "could not remove PasswordPolicyOptions of '${AGENT_USER}'"
+    fi
+    [[ $DRY_RUN -eq 1 ]] || dscacheutil -flushcache 2>/dev/null || true
   fi
 
   # Home: install -d is idempotent and (re)applies owner and mode.

@@ -33,17 +33,15 @@ struct AdminInstaller: SetupAdminBlock {
     var owner: String
     /// Path of the staged token file (phase 1 result), nil when none was acquired.
     var tokenFile: @Sendable () -> URL?
-    /// Convert an existing login account `agentbar` instead of failing (only after the user confirmed).
-    var migrate: Bool
     var statusFile: String
     var executor: AdminScriptExecuting
 
     init(payloadDirectory: URL? = nil, owner: String = NSUserName(), tokenFile: @escaping @Sendable () -> URL? = { nil },
-         migrate: Bool = false, statusFile: String = AdminInstallerSpec.statusFile,
+         statusFile: String = AdminInstallerSpec.statusFile,
          executor: AdminScriptExecuting = AppleScriptExecutor()) {
         self.payloadDirectory = payloadDirectory
             ?? (Bundle.main.resourceURL ?? URL(fileURLWithPath: "/")).appendingPathComponent(AdminInstallerSpec.payloadFolder, isDirectory: true)
-        self.owner = owner; self.tokenFile = tokenFile; self.migrate = migrate
+        self.owner = owner; self.tokenFile = tokenFile
         self.statusFile = statusFile; self.executor = executor
     }
 
@@ -62,7 +60,7 @@ struct AdminInstaller: SetupAdminBlock {
         let runID = UUID().uuidString
         let program = try AdminInstallerSpec.program(
             payloadDir: payloadDirectory.path, manifest: manifest, owner: owner, steps: adminSteps.map(\.rawValue),
-            tokenFile: adminSteps.contains(.claudeToken) ? token?.path : nil, migrate: migrate, runID: runID)
+            tokenFile: adminSteps.contains(.claudeToken) ? token?.path : nil, runID: runID)
         let source = AdminInstallerSpec.appleScriptSource(program: program)
 
         progress("Waiting for administrator authorization")

@@ -42,8 +42,6 @@ public enum AdminInstallerError: Error, Equatable, CustomStringConvertible, Send
     case invalidOwner(String)
     case tokenNotStaged
     case cancelled
-    /// An old login account `agentbar` exists; re-run with migration (script exit 20).
-    case legacyAccount(String)
     case stagingFailed(String)
     case failed(String)
 
@@ -54,7 +52,6 @@ public enum AdminInstallerError: Error, Equatable, CustomStringConvertible, Send
         case .invalidOwner(let n): return "unsafe account name: \(n)"
         case .tokenNotStaged: return "the Claude token was not staged before the admin step"
         case .cancelled: return "admin authorization was cancelled"
-        case .legacyAccount(let m): return "existing login account 'agentbar' must be migrated: \(m)"
         case .stagingFailed(let m): return "could not verify the root staging copy: \(m)"
         case .failed(let m): return "admin setup failed: \(m)"
         }
@@ -66,7 +63,6 @@ public enum AdminInstallerError: Error, Equatable, CustomStringConvertible, Send
         let detail = lastFailure ?? message
         switch code {
         case -128: return .cancelled
-        case AdminInstallerSpec.exitLegacy: return .legacyAccount(detail)
         case AdminInstallerSpec.exitStagingShape, AdminInstallerSpec.exitStagingHash: return .stagingFailed(detail)
         default: return .failed(detail.isEmpty ? "exit \(code)" : detail)
         }
@@ -75,7 +71,6 @@ public enum AdminInstallerError: Error, Equatable, CustomStringConvertible, Send
 
 /// Constants and pure builders shared by the app-side installer and its tests.
 public enum AdminInstallerSpec {
-    public static let exitLegacy = 20
     public static let exitStagingShape = 71
     public static let exitStagingHash = 72
     public static let payloadFolder = "AgentSetup"
@@ -90,7 +85,7 @@ public enum AdminInstallerSpec {
     /// the user-writable bundle: no check/use gap), and only then runs the staged script. Values are quoted
     /// individually; exits 71/72 on staging problems, otherwise the script's own status.
     public static func program(payloadDir: String, manifest: AdminManifest, owner: String, steps: [String],
-                               tokenFile: String?, migrate: Bool, runID: String) throws -> String {
+                               tokenFile: String?, runID: String) throws -> String {
         guard AdminShell.isSafeAccountName(owner) else { throw AdminInstallerError.invalidOwner(owner) }
         var lines = ["set -eu", "export PATH=/usr/bin:/bin:/usr/sbin:/sbin",
                      "B=\(AdminShell.quote(statusDirectory))",
@@ -111,7 +106,6 @@ public enum AdminInstallerSpec {
                     "--steps", AdminShell.quote(steps.joined(separator: ",")), "--run-id", AdminShell.quote(runID),
                     "--host-binary", "\"$S/agentbar-host\"", "--cli-binary", "\"$S/agentbar\""]
         if let t = tokenFile { call += ["--token-file", AdminShell.quote(t)] }
-        if migrate { call.append("--migrate") }
         lines.append(call.joined(separator: " "))
         return lines.joined(separator: "; ")
     }

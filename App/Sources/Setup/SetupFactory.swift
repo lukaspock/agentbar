@@ -26,35 +26,17 @@ struct HostTokenInspector: SetupTokenInspector {
 }
 
 /// The app's admin block: runs `AdminInstaller` with the staged token and ALWAYS discards the staged token afterwards
-/// (the installer removes the file as well). Remembers an old uid-502 account so the UI can ask before migrating.
+/// (the installer removes the file as well).
 final class OnboardingAdminBlock: SetupAdminBlock, @unchecked Sendable {
     private let acquirer: ClaudeTokenAcquirer
-    private let lock = NSLock()
-    private var migrate = false
-    private var legacy = false
 
     init(acquirer: ClaudeTokenAcquirer) { self.acquirer = acquirer }
 
-    var legacyPending: Bool { lock.lock(); defer { lock.unlock() }; return legacy }
-    func confirmMigration() { lock.lock(); migrate = true; legacy = false; lock.unlock() }
-
-    private func currentMigrate() -> Bool { lock.lock(); defer { lock.unlock() }; return migrate }
-    private func finished(legacy found: Bool) {
-        lock.lock(); defer { lock.unlock() }
-        if found { legacy = true } else { migrate = false; legacy = false }
-    }
-
     func run(steps: [SetupStep], progress: @Sendable (String) -> Void) async throws {
         let acquirer = self.acquirer
-        let installer = AdminInstaller(tokenFile: { acquirer.stagedTokenPath.map { URL(fileURLWithPath: $0) } }, migrate: currentMigrate())
+        let installer = AdminInstaller(tokenFile: { acquirer.stagedTokenPath.map { URL(fileURLWithPath: $0) } })
         defer { acquirer.discardStaged() }
-        do {
-            try await installer.run(steps: steps, progress: progress)
-            finished(legacy: false)
-        } catch let e as AdminInstallerError {
-            if case .legacyAccount = e { finished(legacy: true) }
-            throw e
-        }
+        try await installer.run(steps: steps, progress: progress)
     }
 }
 
@@ -156,7 +138,7 @@ final class ProductionSetup {
     var snoozedUntil: Date? { store.string(forKey: Self.snoozedUntilKey).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) } }
 
     func onboardingActions() -> OnboardingActions {
-        let runner = runner, store = store, acquirer = acquirer, admin = admin, box = hooksBox
+        let runner = runner, store = store, acquirer = acquirer, box = hooksBox
         let claude = claudeSetup, version = version
         let loginItem = LoginItemController()
         var a = OnboardingActions()
@@ -183,8 +165,6 @@ final class ProductionSetup {
             Task { _ = try? await NotificationPermission().requestAuthorization() }
         }
         a.customizeMascot = { SettingsWindowController.show(page: .mascot) }
-        a.migrationPending = { admin.legacyPending }
-        a.confirmMigration = { admin.confirmMigration() }
         a.finish = {
             acquirer.discardStaged()
             store.set(nil, forKey: Self.snoozedUntilKey)

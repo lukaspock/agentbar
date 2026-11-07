@@ -91,7 +91,7 @@ final class SetupTests: XCTestCase {
         fs.files[paths.agentHome] = .init(isDirectory: true, mode: 0o700, owner: "agentbar", group: "staff")
         fs.files[paths.daemonPlist] = .init(mode: 0o644, owner: "root", group: "wheel")
         fs.files[paths.ipcDirectory] = .init(isDirectory: true, mode: 0o750, owner: "owner", group: "agentbar-ipc")
-        r.responses["/usr/bin/dscl . -read /Users/agentbar UniqueID UserShell NFSHomeDirectory"] =
+        r.responses["/usr/bin/dscl . -read /Users/agentbar UniqueID UserShell NFSHomeDirectory Password AuthenticationAuthority"] =
             .init(status: 0, stdout: "UniqueID: 399\nUserShell: /usr/bin/false\nNFSHomeDirectory: /Users/agentbar\n")
         r.responses["/bin/launchctl print system/com.agentbar.host"] = .init(status: 0, stdout: "state = running\nlast exit code = (never exited)\n")
         return (fs, r)
@@ -103,14 +103,19 @@ final class SetupTests: XCTestCase {
     }
 
     func testAgentUserProbeTable() async {
-        let dscl = "/usr/bin/dscl . -read /Users/agentbar UniqueID UserShell NFSHomeDirectory"
+        let dscl = "/usr/bin/dscl . -read /Users/agentbar UniqueID UserShell NFSHomeDirectory Password AuthenticationAuthority"
         let lc = "/bin/launchctl print system/com.agentbar.host"
         let cases: [(String, (FakeFS, ScriptedRunner) -> Void, (StepStatus) -> Bool)] = [
             ("healthy", { _, _ in }, { $0 == .done }),
             ("no record", { _, r in r.responses[dscl] = .init(status: 56) }, { $0 == .missing }),
             ("no UniqueID", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UserShell: /usr/bin/false\n") }, { if case .failed = $0 { return true }; return false }),
-            ("uid >= 500", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 501\nUserShell: /usr/bin/false\nNFSHomeDirectory: /Users/agentbar\n") }, { if case .failed(let m) = $0 { return m.contains("501") }; return false }),
-            ("wrong shell", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 399\nUserShell: /bin/zsh\nNFSHomeDirectory: /Users/agentbar\n") }, { if case .failed(let m) = $0 { return m.contains("shell") }; return false }),
+            ("system uid", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 99\nUserShell: /usr/bin/false\nNFSHomeDirectory: /Users/agentbar\n") }, { if case .failed(let m) = $0 { return m.contains("99") }; return false }),
+            ("adopted uid 502, zsh, no AuthenticationAuthority", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 502\nUserShell: /bin/zsh\nNFSHomeDirectory: /Users/agentbar\nPassword: *\n") }, { $0 == .done }),
+            ("adopted uid 502, zsh, no password attribute", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 502\nUserShell: /bin/zsh\nNFSHomeDirectory: /Users/agentbar\n") }, { $0 == .done }),
+            ("uid 502 with AuthenticationAuthority", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 502\nUserShell: /bin/zsh\nNFSHomeDirectory: /Users/agentbar\nPassword: *\nAuthenticationAuthority:\n ;ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2>\n") }, { $0 == .missing }),
+            ("uid 502 with real password", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 502\nUserShell: /bin/zsh\nNFSHomeDirectory: /Users/agentbar\nPassword: ********\n") }, { $0 == .missing }),
+            ("uid 502 shell false is fine", { _, r in r.responses[dscl] = .init(status: 0, stdout: "UniqueID: 502\nUserShell: /usr/bin/false\nNFSHomeDirectory: /Users/agentbar\nAuthenticationAuthority:\n x\n") }, { $0 == .done }),
+            ("admin", { _, r in r.responses["/usr/sbin/dseditgroup -o checkmember -m agentbar admin"] = .init(status: 0) }, { if case .failed(let m) = $0 { return m.contains("admin") }; return false }),
             ("home missing", { fs, _ in fs.files[self.paths.agentHome] = nil }, { if case .failed = $0 { return true }; return false }),
             ("home owned by root", { fs, _ in fs.files[self.paths.agentHome]?.owner = "root" }, { if case .failed(let m) = $0 { return m.contains("root") }; return false }),
             ("plist missing", { fs, _ in fs.files[self.paths.daemonPlist] = nil }, { $0 == .missing }),

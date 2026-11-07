@@ -125,7 +125,7 @@ public struct SetupPaths: Equatable, Sendable {
 
 // MARK: - Probes
 
-/// Role account `agentbar`: dscl record (UID < 500, shell /usr/bin/false), home owner, daemon plist, daemon state
+/// Role account `agentbar`: dscl record (UID >= 100, not admin; shell /usr/bin/false, or an adopted account without login), home owner, daemon plist, daemon state
 /// (running, no "last exit code = 78"), IPC directory (group agentbar-ipc, 0750). Absent pieces = `missing`,
 /// wrong pieces = `failed(reason)`.
 public struct AgentUserProbe: SetupProbe {
@@ -146,15 +146,29 @@ public struct AgentUserProbe: SetupProbe {
         return nil
     }
 
+    static func hasKey(_ key: String, in text: String) -> Bool {
+        text.split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix(key + ":") }
+    }
+
     public func check() async -> StepStatus {
-        let dscl = await runner.run("/usr/bin/dscl", arguments: [".", "-read", "/Users/\(paths.agentUser)", "UniqueID", "UserShell", "NFSHomeDirectory"])
+        let dscl = await runner.run("/usr/bin/dscl", arguments: [".", "-read", "/Users/\(paths.agentUser)", "UniqueID", "UserShell", "NFSHomeDirectory", "Password", "AuthenticationAuthority"])
         guard dscl.status == 0 else { return .missing }
         guard let uidStr = Self.field("UniqueID", in: dscl.stdout), let uid = Int(uidStr) else {
             return .failed("user record has no UniqueID (partial setup)")
         }
-        guard uid < 500 else { return .failed("UniqueID \(uid) is not a role-account UID (< 500)") }
-        guard Self.field("UserShell", in: dscl.stdout) == "/usr/bin/false" else { return .failed("login shell must be /usr/bin/false") }
+        guard uid >= 100 else { return .failed("UniqueID \(uid) belongs to a system account") }
         guard Self.field("NFSHomeDirectory", in: dscl.stdout) != nil else { return .failed("user record has no home directory") }
+        // A new role account has shell /usr/bin/false. An adopted account (e.g. uid 502 from sysadminctl) keeps its
+        // UID; it counts as set up when it cannot log in (no AuthenticationAuthority, password '*' or empty).
+        // Otherwise the setup script hardens it, so this is `missing`, not `failed`.
+        let shellIsFalse = Self.field("UserShell", in: dscl.stdout) == "/usr/bin/false"
+        if !shellIsFalse {
+            let password = Self.field("Password", in: dscl.stdout)
+            let noLogin = !Self.hasKey("AuthenticationAuthority", in: dscl.stdout) && (password == nil || password == "*")
+            guard noLogin else { return .missing }
+        }
+        let admin = await runner.run("/usr/sbin/dseditgroup", arguments: ["-o", "checkmember", "-m", paths.agentUser, "admin"])
+        guard admin.status != 0 else { return .failed("\(paths.agentUser) is an admin; remove it from the admin group") }
 
         guard let home = fs.info(at: paths.agentHome), home.isDirectory else { return .failed("home directory \(paths.agentHome) is missing") }
         guard home.owner == paths.agentUser else { return .failed("home is owned by \(home.owner ?? "?"), expected \(paths.agentUser)") }

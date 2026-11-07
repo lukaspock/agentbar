@@ -19,10 +19,6 @@ struct OnboardingActions {
     var customizeMascot: @MainActor () -> Void = {}
     /// Initial state of the "separate agent user" switch (persisted choice of an earlier run).
     var useAgentUser = true
-    /// True when the last admin run found an old login account `agentbar` (needs the user's OK to migrate).
-    var migrationPending: @MainActor () -> Bool = { false }
-    /// The user agreed to migrate the old account; the next admin run converts it.
-    var confirmMigration: @MainActor () -> Void = {}
     /// Demo/screenshot aids (`--demo-onboarding`): start on this login phase / press "Get started" after a moment.
     var demoLoginPhase: OnboardingModel.LoginPhase?
     var demoAutoStart = false
@@ -67,7 +63,6 @@ final class OnboardingModel: ObservableObject {
     @Published private(set) var running = false
     @Published private(set) var busy = false
     @Published private(set) var hooksDiff: String?
-    @Published private(set) var migrationOffer = false
     /// Welcome mascot: far in the past = asleep, `Date()` = woken up.
     @Published private(set) var mascotSince = Date(timeIntervalSinceNow: -(BarTheme.idleSleepAfter + 600))
     @Published var autostart = true { didSet { if oldValue != autostart { actions.setAutostart(autostart) } } }
@@ -180,14 +175,6 @@ final class OnboardingModel: ObservableObject {
 
     func continueFromSetup() { page = .done }
 
-    /// The user agreed to convert the old `agentbar` account: run everything again with migration on.
-    func migrate() async {
-        guard !running else { return }
-        actions.confirmMigration()
-        migrationOffer = false
-        await perform { progress in await self.runner.runAll(progress: progress) }
-    }
-
     private func perform(_ body: (@escaping @Sendable (SetupEvent) -> Void) async -> SetupState) async {
         running = true
         let (stream, cont) = AsyncStream<SetupEvent>.makeStream()
@@ -197,7 +184,6 @@ final class OnboardingModel: ObservableObject {
         await consumer.value
         sync(final)
         hooksDiff = await actions.hooksDiff()
-        migrationOffer = actions.migrationPending()
         running = false
     }
 

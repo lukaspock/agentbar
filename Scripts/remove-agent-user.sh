@@ -119,8 +119,9 @@ fi
 [[ "$AGENT_USER" == "agentbar" ]] || die "internal: unexpected user name"
 if user_exists; then
   uid="$(id -u "$AGENT_USER")"
-  # Role account (UID 200..399, shell /usr/bin/false) or a legacy login account; never a system account.
-  [[ "$uid" -ge 200 ]] || die "refusing: UID $uid is a system account"
+  # Role account (UID 200..399, shell /usr/bin/false) or an adopted existing account (uid >= 100, name agentbar,
+  # as taken over by setup-agent-user.sh); never a system account.
+  [[ "$uid" -ge 100 ]] || die "refusing: UID $uid is a system account"
   shell="$(dscl . -read "/Users/${AGENT_USER}" UserShell 2>/dev/null | awk '{print $2}')"
   if [[ "$uid" -lt 500 && "$shell" != "/usr/bin/false" ]]; then die "refusing: UID $uid with shell '${shell}' does not look like the agent role account"; fi
   [[ "${SUDO_USER:-}" != "$AGENT_USER" ]] || die "refusing: run as the owner, not the agent user"

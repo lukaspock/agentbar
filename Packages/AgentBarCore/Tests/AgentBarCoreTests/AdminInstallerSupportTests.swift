@@ -34,11 +34,11 @@ final class AdminInstallerSupportTests: XCTestCase {
     func testProgramParsesAndQuotesPathsWithSpacesAndQuotes() throws {
         let dir = "/Applications/Agent Bar's/AgentBar.app/Contents/Resources/AgentSetup"
         let p = try AdminInstallerSpec.program(payloadDir: dir, manifest: manifest(), owner: "lukas", steps: ["agentUser", "cli"],
-                                               tokenFile: "/tmp/dir with space/tok", migrate: true, runID: "r1")
+                                               tokenFile: "/tmp/dir with space/tok", runID: "r1")
         XCTAssertEqual(sh(["-n", "-c", p]).0, 0, "program must be valid shell")
         XCTAssertTrue(p.contains(AdminShell.quote(dir + "/agentbar-host")))
         XCTAssertTrue(p.contains("--token-file '/tmp/dir with space/tok'"))
-        XCTAssertTrue(p.contains("--migrate"))
+        XCTAssertFalse(p.contains("--migrate"))
         XCTAssertTrue(p.contains("exit 72") && p.contains("shasum -a 256 -c"))
         // Hash check must come before the script runs.
         XCTAssertLessThan(try XCTUnwrap(p.range(of: "shasum")).lowerBound, try XCTUnwrap(p.range(of: "/bin/bash \"$S/")).lowerBound)
@@ -49,7 +49,7 @@ final class AdminInstallerSupportTests: XCTestCase {
 
     func testProgramRejectsUnsafeOwner() {
         XCTAssertThrowsError(try AdminInstallerSpec.program(payloadDir: "/x", manifest: manifest(), owner: "a;rm -rf /", steps: [],
-                                                            tokenFile: nil, migrate: false, runID: "r")) {
+                                                            tokenFile: nil, runID: "r")) {
             XCTAssertEqual($0 as? AdminInstallerError, .invalidOwner("a;rm -rf /"))
         }
     }
@@ -99,7 +99,7 @@ final class AdminInstallerSupportTests: XCTestCase {
 
     func testErrorClassification() {
         XCTAssertEqual(AdminInstallerError.classify(code: -128, message: "User canceled.", lastFailure: nil), .cancelled)
-        XCTAssertEqual(AdminInstallerError.classify(code: 20, message: "", lastFailure: "uid 502"), .legacyAccount("uid 502"))
+        XCTAssertEqual(AdminInstallerError.classify(code: 20, message: "", lastFailure: "uid 502"), .failed("uid 502"))
         XCTAssertEqual(AdminInstallerError.classify(code: 72, message: "SHA-256 mismatch", lastFailure: nil), .stagingFailed("SHA-256 mismatch"))
         XCTAssertEqual(AdminInstallerError.classify(code: 1, message: "", lastFailure: nil), .failed("exit 1"))
     }
