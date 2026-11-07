@@ -44,10 +44,17 @@ public protocol AgentAdapter: Sendable {
     /// Additive: metadata events derived from the same payload (e.g. the working directory). Applied by the transport
     /// after `translate`; kept apart so `translate` output stays unchanged. Default: none.
     func metadataEvents(payload: Data) -> [CoreEvent]
+    /// Additive (Phase 12): non-nil when this payload is a point where one queued user message may be handed to the agent as
+    /// the hook output (Claude Code `Stop` that is not itself a continuation). Default: never.
+    func queueDelivery(payload: Data) -> QueueDeliveryPoint?
+    /// Additive (Phase 12): the hook output that carries `text` to the agent. Empty Data = cannot deliver. Default: empty.
+    func encodeQueuedMessage(_ text: String, at point: QueueDeliveryPoint) -> Data
 }
 
 public extension AgentAdapter {
     func metadataEvents(payload: Data) -> [CoreEvent] { [] }
+    func queueDelivery(payload: Data) -> QueueDeliveryPoint? { nil }
+    func encodeQueuedMessage(_ text: String, at point: QueueDeliveryPoint) -> Data { Data() }
 }
 
 /// A visual presentation of the bar (notch island, floating pill, free-floating circle).

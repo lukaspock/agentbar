@@ -33,7 +33,7 @@ struct FakeClaude: AgentAdapter {
                                      sharedGid: getgid())
     }
     let store = SessionStore()
-    let server = TransportServer(store: store, adapters: ["claudeCode": FakeClaude(), "computerUse": ComputerUseAdapter()],
+    let server = TransportServer(store: store, adapters: ["claudeCode": FakeClaude(), "claudeReal": ClaudeCodeAdapter(), "computerUse": ComputerUseAdapter()],
                                  directory: URL(fileURLWithPath: dir), security: security)
     do { try server.start() } catch { FileHandle.standardError.write(Data("start failed: \(error)\n".utf8)); exit(1) }
     let statePath = dir + "/state.txt"
@@ -50,14 +50,18 @@ struct FakeClaude: AgentAdapter {
             if let c = try? String(contentsOfFile: dir + "/cmd.txt", encoding: .utf8) {
                 unlink(dir + "/cmd.txt")
                 let p = c.split(separator: " ", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                if p.count == 2 {
+                // "queue <session> <text>": the user types a message in the panel for the session's next Stop.
+                if p.count == 2, p[0] == "queue", let sp = p[1].firstIndex(of: " ") {
+                    let r = store.queueMessage(String(p[1][p[1].index(after: sp)...]), sessionId: String(p[1][..<sp]))
+                    try? "\(r)".write(toFile: dir + "/queue-result.txt", atomically: true, encoding: .utf8)
+                } else if p.count == 2 {
                     switch p[0] { case "stop": store.stop(sessionId: p[1]); case "pause": store.pause(sessionId: p[1])
                     case "resume": store.resume(sessionId: p[1]); default: break }
                 }
             }
             let stopFlags = store.sessions.filter { $0.supportsStop }.map { $0.id }.sorted().joined(separator: ",")
             try? stopFlags.write(toFile: dir + "/stoppable.txt", atomically: true, encoding: .utf8)
-            let line = "pending=\(store.pendingRequestCount) sessions=\(store.sessions.count) aggregate=\(store.aggregateState.rawValue)\n"
+            let line = "pending=\(store.pendingRequestCount) sessions=\(store.sessions.count) aggregate=\(store.aggregateState.rawValue) queued=\(store.sessions.reduce(0) { $0 + $1.queuedMessages.count })\n"
             try? line.write(toFile: statePath + ".tmp", atomically: false, encoding: .utf8)
             rename(statePath + ".tmp", statePath)
         }

@@ -5,7 +5,7 @@ import Combine
 public enum AgentCommand: String, Sendable { case stop, pause, resume }
 
 @MainActor
-public final class SessionStore: ObservableObject, SessionStoreReading, ResponseSink {
+public final class SessionStore: ObservableObject, SessionStoreReading, ResponseSink, MessageQueueSink {
     public enum AskResult: Sendable, Equatable { case accepted, tooManyPending, duplicateRequest, sessionLimit }
 
     @Published public private(set) var sessions: [AgentSession] = []
@@ -104,6 +104,12 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         }
         if role == .agent && sessions[i].originRole == .owner { return }
         if role == .owner && sessions[i].originRole == .agent { sessions[i].workingDirectory = nil }
+        // Messages queued for one role are never handed to the other one: a change of origin drops them (with a note).
+        if let old = sessions[i].originRole, old != role, !sessions[i].queuedMessages.isEmpty {
+            let n = sessions[i].queuedMessages.count
+            sessions[i].queuedMessages = []
+            append(.init(kind: .status, text: "\(n) queued message\(n == 1 ? "" : "s") dropped (session changed owner)"), at: i)
+        }
         sessions[i].originRole = role
     }
 
@@ -151,6 +157,11 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
                 resolve(requestId: r.requestId, sessionId: id, response: AgentResponse(requestId: r.requestId, reason: .cancelled))
             }
             guard let j = sessions.firstIndex(where: { $0.id == id }) else { return }
+            if !sessions[j].queuedMessages.isEmpty {
+                let n = sessions[j].queuedMessages.count
+                sessions[j].queuedMessages = []
+                append(.init(kind: .status, text: "\(n) queued message\(n == 1 ? "" : "s") not delivered (session ended)"), at: j)
+            }
             sessions[j].state = .done
             sessions[j].currentAction = nil
             sessions[j].supportsStop = false
@@ -311,5 +322,56 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
         if ra != rb { return ra < rb }
         if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
         return a.id < b.id
+    }
+}
+
+// MARK: Queued messages (Phase 12)
+
+extension SessionStore {
+    /// Queues a user message for the session's next `Stop`. Sanitizes the text and enforces the limits; the store is the only
+    /// place that holds the queue (the UI just shows it).
+    public func queueMessage(_ raw: String, sessionId: String) -> QueueResult {
+        guard let i = sessions.firstIndex(where: { $0.id == sessionId }), sessions[i].canQueueMessage,
+              !isChatOwned(sessionId) else { return .notAvailable }
+        guard let text = QueuedMessage.sanitize(raw) else { return .empty }
+        guard QueuedMessage.size(of: text) <= MessageQueueLimits.maxMessageLength else { return .tooLong }
+        guard sessions[i].queuedMessages.count < MessageQueueLimits.maxQueuedPerSession else { return .queueFull }
+        let m = QueuedMessage(text: text, date: now())
+        sessions[i].queuedMessages.append(m)
+        return .queued(m.id)
+    }
+
+    /// Removes a still-waiting message. false = not (or no longer) queued, e.g. already delivered.
+    @discardableResult
+    public func cancelQueuedMessage(id: UUID, sessionId: String) -> Bool {
+        guard let i = sessions.firstIndex(where: { $0.id == sessionId }),
+              let k = sessions[i].queuedMessages.firstIndex(where: { $0.id == id }) else { return false }
+        sessions[i].queuedMessages.remove(at: k)
+        return true
+    }
+
+    /// Takes the oldest waiting message of the session for a hook event of `role`, at most one per call. Delivers ONLY to the
+    /// role that owns the session (`originRole`): a Stop of the other role gets nothing (and the message stays queued).
+    /// `render` turns the text into the hook output; an empty result means "cannot encode" and nothing is consumed.
+    /// Returns the hook output, or nil when there is nothing to deliver. Records the delivery in the history and marks the
+    /// session as working again (Claude continues because of the `block`).
+    public func deliverQueuedMessage(sessionId: String, role: PeerRole, render: (String) -> Data) -> Data? {
+        guard let i = sessions.firstIndex(where: { $0.id == sessionId }), sessions[i].originRole == role,
+              sessions[i].kind == .claudeCode, !isChatOwned(sessionId) else { return nil }
+        // Stale messages are dropped, not delivered late.
+        let cutoff = now().addingTimeInterval(-MessageQueueLimits.maxAge)
+        let expired = sessions[i].queuedMessages.filter { $0.date < cutoff }
+        if !expired.isEmpty {
+            sessions[i].queuedMessages.removeAll { $0.date < cutoff }
+            append(.init(kind: .status, text: "\(expired.count) queued message\(expired.count == 1 ? "" : "s") expired (not delivered)"), at: i)
+        }
+        guard let m = sessions[i].queuedMessages.first else { return nil }
+        let out = render(m.text)
+        guard !out.isEmpty else { return nil }
+        sessions[i].queuedMessages.removeFirst()
+        append(.init(kind: .answer, text: (MessageQueueLimits.deliveredPrefix + m.text).capped(AgentBarLimits.maxTextLength)), at: i)
+        apply(.sessionUpdate(id: sessionId, name: nil, kind: nil, state: .working, action: "Continuing with your queued message",
+                             supportsStop: nil))
+        return out
     }
 }

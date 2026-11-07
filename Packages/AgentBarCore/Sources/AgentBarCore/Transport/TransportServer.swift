@@ -586,7 +586,16 @@ public final class TransportServer: @unchecked Sendable {
             if case let .ask(sid, r) = ev, blocking == nil { blocking = (sid, r); continue }
             onMain { [store] in store.apply(ev) }
         }
-        guard let (sid, request) = blocking else { return ["ok": true, "output": ""] }
+        guard let (sid, request) = blocking else {
+            // Phase 12: a Stop may carry ONE queued message of this session, only for the role that owns the session.
+            if let point = adapter.queueDelivery(payload: data) {
+                let out = onMain { [store] in
+                    store.deliverQueuedMessage(sessionId: point.sessionId, role: role) { adapter.encodeQueuedMessage($0, at: point) }
+                }
+                if let out { return ["ok": true, "output": String(decoding: out, as: UTF8.self)] }
+            }
+            return ["ok": true, "output": ""]
+        }
         guard let outcome = submitAndWait(session: sid, request: request, fd: fd, role: role) else { return nil }
         switch outcome {
         case .failure:

@@ -4,7 +4,7 @@ import AgentBarCore
 
 /// Scripted in-memory store for previews, screenshots and `--demo`. Conforms to both UI-facing protocols.
 @MainActor
-final class FakeSessionStore: SessionStoreReading, ResponseSink {
+final class FakeSessionStore: SessionStoreReading, ResponseSink, MessageQueueSink {
     @Published private(set) var sessions: [AgentSession] = []
 
     var aggregateState: SessionState {
@@ -135,6 +135,26 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                                  currentAction: "Clicking the \"Submit\" button in Safari", supportsStop: true),
                     AgentSession(id: "b", name: "api-server", kind: .codex, state: .idle)]
             if name == "hook" { list = list.filter { $0.id == "hook1" || $0.id == "b" } }   // short list: panel fits the screenshot
+        case "queue", "queuedelivered":
+            // Hook session with waiting ("queue") or already delivered ("queuedelivered") messages; use --demo-select hook1.
+            var hist = [h(400, .status, "Session started"),
+                        h(300, .answer, "You: Why does the notch flicker when a second display is attached?"),
+                        h(280, .action, "Read NotchWindow.swift"),
+                        h(200, .status, "Claude: The panel frame is recomputed on every screen change; I would debounce it."),
+                        h(120, .answer, "You: Go ahead and fix it, then run the tests."),
+                        h(60, .action, "Edited NotchWindow.swift")]
+            var waiting = [QueuedMessage(text: "Also keep the 200 ms debounce configurable.", date: now.addingTimeInterval(-25))]
+            if name == "queue" {
+                waiting.append(QueuedMessage(text: "Please don't touch the Preferences code.", date: now.addingTimeInterval(-8)))
+            } else {
+                hist += [h(25, .status, "done"),
+                         h(20, .answer, MessageQueueLimits.deliveredPrefix + "Run the whole suite once more before you finish."),
+                         h(19, .action, "Continuing with your queued message"),
+                         h(5, .action, "Running tests")]
+            }
+            list = [AgentSession(id: "hook1", name: "notchy-app", kind: .claudeCode, state: .working, history: hist,
+                                 workingDirectory: "/Users/demo/Projects/notchy-app", originRole: .owner, queuedMessages: waiting),
+                    AgentSession(id: "b", name: "api-server", kind: .codex, state: .idle)]
         case "approval", "approval2":
             // Open approval in the (selected) hook session `hook1`, shown as a bubble in its conversation (use --demo-select hook1).
             // "approval2" has a second waiting session: its request stays a card on top.
@@ -220,6 +240,28 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
         sessions[i].history.append(entry)
         if let state { sessions[i].state = state; sessions[i].currentAction = nil }
         sessions[i].updatedAt = Date()
+    }
+
+    // MARK: MessageQueueSink (demo: same limits as the real store, no delivery)
+
+    func queueMessage(_ raw: String, sessionId: String) -> QueueResult {
+        guard let i = sessions.firstIndex(where: { $0.id == sessionId }), sessions[i].canQueueMessage else { return .notAvailable }
+        guard let text = QueuedMessage.sanitize(raw) else { return .empty }
+        guard QueuedMessage.size(of: text) <= MessageQueueLimits.maxMessageLength else { return .tooLong }
+        guard sessions[i].queuedMessages.count < MessageQueueLimits.maxQueuedPerSession else { return .queueFull }
+        let m = QueuedMessage(text: text)
+        sessions[i].queuedMessages.append(m)
+        NSLog("[demo] queued session=%@ text=%@", sessionId, text)
+        return .queued(m.id)
+    }
+
+    @discardableResult
+    func cancelQueuedMessage(id: UUID, sessionId: String) -> Bool {
+        guard let i = sessions.firstIndex(where: { $0.id == sessionId }),
+              let k = sessions[i].queuedMessages.firstIndex(where: { $0.id == id }) else { return false }
+        sessions[i].queuedMessages.remove(at: k)
+        NSLog("[demo] queue cancel session=%@", sessionId)
+        return true
     }
 
     func addSession(_ s: AgentSession) { sessions = sorted(sessions + [s]) }

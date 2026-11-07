@@ -69,15 +69,43 @@ public struct AgentSession: Codable, Sendable, Identifiable, Hashable {
     /// data from an older version). "Continue in panel" requires `.owner`: a session of the agent user must never make the
     /// owner start a process in a directory the agent chose.
     public var originRole: PeerRole?
+    /// Additive (Phase 12): messages the user wrote in the panel that wait for Claude's next hook `Stop` (oldest first). The store owns
+    /// the queue; delivered or cancelled messages leave it (a delivery is recorded in `history`). Older data decodes as empty.
+    public var queuedMessages: [QueuedMessage]
     public init(id: String, name: String, kind: AgentKind, state: SessionState = .idle,
                 currentAction: String? = nil, pendingRequests: [AgentRequest] = [],
                 history: [HistoryEntry] = [], updatedAt: Date = Date(), supportsStop: Bool = false,
-                workingDirectory: String? = nil, originRole: PeerRole? = nil) {
-        self.workingDirectory = workingDirectory; self.originRole = originRole
+                workingDirectory: String? = nil, originRole: PeerRole? = nil, queuedMessages: [QueuedMessage] = []) {
+        self.workingDirectory = workingDirectory; self.originRole = originRole; self.queuedMessages = queuedMessages
         self.id = id; self.name = name; self.kind = kind; self.state = state
         self.currentAction = currentAction; self.pendingRequests = pendingRequests
         self.history = history; self.updatedAt = updatedAt; self.supportsStop = supportsStop
     }
+
+    // Explicit decoder: `queuedMessages` was added later, data without it must still decode.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decode(AgentKind.self, forKey: .kind)
+        state = try c.decode(SessionState.self, forKey: .state)
+        currentAction = try c.decodeIfPresent(String.self, forKey: .currentAction)
+        pendingRequests = try c.decode([AgentRequest].self, forKey: .pendingRequests)
+        history = try c.decode([HistoryEntry].self, forKey: .history)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        supportsStop = try c.decode(Bool.self, forKey: .supportsStop)
+        workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
+        originRole = try c.decodeIfPresent(PeerRole.self, forKey: .originRole)
+        queuedMessages = try c.decodeIfPresent([QueuedMessage].self, forKey: .queuedMessages) ?? []
+    }
+}
+
+/// A user message waiting in the queue of a hook session (Phase 12). Plain data; the rules live in `SessionStore`.
+public struct QueuedMessage: Codable, Sendable, Identifiable, Hashable {
+    public var id: UUID
+    public var text: String
+    public var date: Date
+    public init(id: UUID = UUID(), text: String, date: Date = Date()) { self.id = id; self.text = text; self.date = date }
 }
 
 public struct AgentResponse: Codable, Sendable, Hashable {

@@ -10,6 +10,8 @@ public enum ChatLine: Equatable, Sendable {
 
     public static func parse(_ e: HistoryEntry) -> ChatLine {
         if e.kind == .answer, e.text.hasPrefix("You: ") { return .user(String(e.text.dropFirst(5))) }
+        // Phase 12: a queued message that was delivered to Claude (the UI marks it "delivered").
+        if e.kind == .answer, e.text.hasPrefix(MessageQueueLimits.deliveredPrefix) { return .user(String(e.text.dropFirst(MessageQueueLimits.deliveredPrefix.count))) }
         if e.kind == .error { return .error(e.text) }
         if e.kind == .status, e.text.hasPrefix("Claude: ") { return .agent(String(e.text.dropFirst(8))) }
         return .note(e.text)

@@ -97,6 +97,33 @@ public final class ClaudeCodeAdapter: AgentAdapter, @unchecked Sendable {
         return [.sessionDirectory(id: sid, path: cwd)]
     }
 
+    // MARK: queued user messages (Phase 12)
+
+    /// A `Stop` that may carry one queued message. Not when `stop_hook_active` is anything but `false`/absent: Claude is then
+    /// already continuing because of a stop hook (ours or another one), so no second block in the same cycle (loop guard on top
+    /// of Claude Code's own cap of 8 consecutive continuations). SubagentStop and every other event never deliver.
+    public func queueDelivery(payload: Data) -> QueueDeliveryPoint? {
+        guard payload.count <= Self.maxPayloadBytes,
+              let obj = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              obj["hook_event_name"] as? String == "Stop",
+              let sid = obj["session_id"] as? String, !sid.isEmpty, sid.count <= AgentBarLimits.maxIdLength else { return nil }
+        // Absent (or null) counts as false; any non-boolean value is treated as "active" (fail safe: no delivery).
+        if let v = obj["stop_hook_active"], !(v is NSNull), (v as? Bool) != false { return nil }
+        return QueueDeliveryPoint(sessionId: sid)
+    }
+
+    /// Prefix that tells Claude where the text comes from (a bare Stop-hook reason would read like tool feedback).
+    static let queuedMessageIntro = "The user queued this message in AgentBar while you were working:\n\n"
+
+    /// `{"decision":"block","reason":"<intro + text>"}`. The text is sanitized again and capped; the JSON is built by
+    /// JSONSerialization, so the text can never add keys or break out of the string.
+    public func encodeQueuedMessage(_ text: String, at point: QueueDeliveryPoint) -> Data {
+        guard let clean = QueuedMessage.sanitize(text),
+              QueuedMessage.size(of: clean) <= MessageQueueLimits.maxMessageLength else { return Data() }
+        let out: [String: Any] = ["decision": "block", "reason": Self.queuedMessageIntro + clean]
+        return (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data()
+    }
+
     /// Max characters of an approval text. Stays below `AgentBarLimits.maxTextLength` so the store never cuts it.
     public static let maxApprovalText = AgentBarLimits.maxTextLength - 100
     public static let truncationMarker = "… [truncated, check in terminal]"

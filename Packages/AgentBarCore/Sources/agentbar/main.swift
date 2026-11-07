@@ -103,6 +103,8 @@ let connectTimeout: TimeInterval = 5
 let nonBlockingReplyTimeout: TimeInterval = 5
 let askGrace: TimeInterval = 5
 let hookBlockingTimeout: TimeInterval = 130
+/// `Stop` may carry a queued user message back; the app answers at once, so a longer wait only means a stuck app.
+let hookStopReplyTimeout: TimeInterval = 2
 
 func connectSocket(_ dir: String) -> Int32? {
     let path = dir + "/agentbar.sock"
@@ -262,9 +264,12 @@ func runHook(_ a: Args) -> Int32 {
     }
     guard let payload = try? JSONSerialization.jsonObject(with: input, options: [.fragmentsAllowed]) else { return 0 }
     let req: [String: Any] = ["op": "payload", "adapter": adapter, "payload": payload]
-    // Only PermissionRequest blocks for a decision; every other event is fire-and-forget (5 s).
-    let blocking = ((payload as? [String: Any])?["hook_event_name"] as? String) == "PermissionRequest"
-    guard case .reply(let obj) = roundTrip(req, dir: defaultDir(), replyTimeout: blocking ? hookBlockingTimeout : nonBlockingReplyTimeout),
+    // Only PermissionRequest blocks for a decision. Stop waits briefly (<= 2 s) for a queued user message ({"decision":"block",...});
+    // no answer in time = empty output = Claude stops as usual (fail safe). Every other event is fire-and-forget (5 s).
+    let event = (payload as? [String: Any])?["hook_event_name"] as? String
+    let blocking = event == "PermissionRequest"
+    let wait = blocking ? hookBlockingTimeout : (event == "Stop" ? hookStopReplyTimeout : nonBlockingReplyTimeout)
+    guard case .reply(let obj) = roundTrip(req, dir: defaultDir(), replyTimeout: wait),
           obj["ok"] as? Bool == true, let output = obj["output"] as? String, !output.isEmpty else { return 0 }
     out(output)
     return 0

@@ -187,7 +187,8 @@ struct DetailPanel<S: SessionStoreReading & ResponseSink>: View {
                 ChatPanel(session: selected, look: SessionLook.resolve(selected, store: prefs.store),
                           backend: backend, sink: store, bubble: bubbleRequest(for: selected), model: model)
             } else if !selected.history.isEmpty {
-                HookConversationPanel(session: selected, backend: hub.backend, bubble: bubbleRequest(for: selected), model: model)
+                HookConversationPanel(session: selected, backend: hub.backend, queue: store as? MessageQueueSink,
+                                      bubble: bubbleRequest(for: selected), model: model)
             }
         }
         if selected == nil, hub.backend != nil {
@@ -563,14 +564,20 @@ private struct GroupHeader: View {
     }
 }
 
-/// Conversation of a session that is only observed through hooks (terminal): same bubbles as a chat session,
-/// but no input. Replying happens in the terminal; "Continue in panel" starts a forked copy as a chat session here.
+/// Conversation of a session that is only observed through hooks (terminal): same bubbles as a chat session.
+/// Replying happens in the terminal; "Continue in panel" starts a forked copy as a chat session here. A message typed in
+/// the field below is only QUEUED: it is handed to Claude with the session's next Stop hook (never into an idle terminal).
 private struct HookConversationPanel: View {
     let session: AgentSession
     let backend: ChatBackend?
+    let queue: MessageQueueSink?
     let bubble: BubbleRequest?
     @ObservedObject var model: BarViewModel
     @State private var starting = false
+    @State private var typed = 0
+    @State private var notice: String?
+
+    private var canQueue: Bool { queue != nil && session.canQueueMessage }
 
     private var canContinue: Bool { backend != nil && session.canContinueInPanel }
 
@@ -582,8 +589,11 @@ private struct HookConversationPanel: View {
                 Spacer()
                 Text("\(session.history.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.white.opacity(0.3))
             }
-            ConversationTranscript(history: ApprovalTranscript.display(history: session.history, bubble: bubble?.request), maxHeight: bubble == nil ? 150 : 70)
+            ConversationTranscript(history: ApprovalTranscript.display(history: session.history, bubble: bubble?.request),
+                                   maxHeight: bubble == nil ? (session.queuedMessages.isEmpty ? 150 : 190) : 70, queued: session.queuedMessages,
+                                   onCancelQueued: canQueue ? { id in queue?.cancelQueuedMessage(id: id, sessionId: session.id) } : nil)
             if let bubble { ApprovalBubble(bubble: bubble, model: model).id(approvalBubbleAnchor) }
+            if canQueue { queueField }
             HStack(spacing: 5) {
                 Image(systemName: "terminal").font(.system(size: 9))
                 Text("Reply in the terminal").font(.system(size: 10))
@@ -615,6 +625,45 @@ private struct HookConversationPanel: View {
             guard LaunchOptions.current.demoForkAuto, canContinue else { return }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             if !Task.isCancelled { continueInPanel() }
+        }
+    }
+
+    /// Input for a queued message plus the honest explanation of when it arrives.
+    private var queueField: some View {
+        let full = session.queuedMessages.count >= MessageQueueLimits.maxQueuedPerSession
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                ReplyField(placeholder: full ? "Queue is full (\(MessageQueueLimits.maxQueuedPerSession) waiting)" : "Queue a message for the next step",
+                           onEditing: { model.setEditing($0) },
+                           onSubmit: { _ in },
+                           maxLength: MessageQueueLimits.maxMessageLength,
+                           onSubmitAccepted: { submitQueued($0) },
+                           onLength: { typed = $0 })
+                    .frame(height: 20)
+                if typed > MessageQueueLimits.maxMessageLength * 8 / 10 {
+                    Text("\(typed)/\(MessageQueueLimits.maxMessageLength)").font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(full ? 0.05 : 0.10)))
+            if let notice {
+                Text(notice).font(.system(size: 10)).foregroundStyle(BarTheme.error.opacity(0.9))
+            }
+            Text("Delivered when Claude finishes its current step. If Claude is waiting for you in the terminal, type there or use Continue in panel.")
+                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func submitQueued(_ text: String) -> Bool {
+        guard let queue else { return false }
+        switch queue.queueMessage(text, sessionId: session.id) {
+        case .queued: notice = nil; return true
+        case .queueFull: notice = "\(MessageQueueLimits.maxQueuedPerSession) messages are already waiting. Remove one first."; return false
+        case .tooLong: notice = "Too long (max \(MessageQueueLimits.maxMessageLength) characters)."; return false
+        case .empty: return false
+        case .notAvailable: notice = "This session cannot receive queued messages."; return false
         }
     }
 

@@ -14,6 +14,8 @@ final class LoggingAdapter: AgentAdapter, @unchecked Sendable {
         lock.unlock()
         return try inner.translate(payload: payload)
     }
+    func queueDelivery(payload: Data) -> QueueDeliveryPoint? { inner.queueDelivery(payload: payload) }
+    func encodeQueuedMessage(_ text: String, at point: QueueDeliveryPoint) -> Data { inner.encodeQueuedMessage(text, at: point) }
     func encode(response: AgentResponse, for request: AgentRequest) -> Data {
         let d = inner.encode(response: response, for: request)
         lock.lock()
@@ -162,6 +164,25 @@ final class ClaudeCodeEndToEndTests: XCTestCase {
         let (rc2, out2, _) = await hook(fixture(["hook_event_name": "SessionEnd"]))
         XCTAssertEqual(rc2, 0); XCTAssertEqual(out2, "")
         XCTAssertEqual(store.sessions.first { $0.id == "e2e-1" }?.state, .done)   // store keeps ended sessions as done
+    }
+
+    /// Phase 12 with the real `agentbar hook` process: a queued message comes back on stdout of the session's next Stop
+    /// (exit 0), exactly once; a continuation Stop (`stop_hook_active`) and a Stop without a queue print nothing.
+    func testHookProcessDeliversQueuedMessageOnStop() async throws {
+        try XCTSkipIf(cliURL == nil, "agentbar binary not built next to the test bundle")
+        let (rc0, out0, _) = await hook(fixture(["hook_event_name": "SessionStart"]))
+        XCTAssertEqual(rc0, 0); XCTAssertEqual(out0, "")
+        XCTAssertEqual(store.sessions.first?.originRole, .owner)
+        guard case .queued = store.queueMessage("please also run \"swift test\"", sessionId: "e2e-1") else { return XCTFail("not queued") }
+        let (rc1, out1, _) = await hook(fixture(["hook_event_name": "Stop", "stop_hook_active": true]))
+        XCTAssertEqual(rc1, 0); XCTAssertEqual(out1, "", "continuation Stop must not deliver")
+        XCTAssertEqual(store.sessions.first?.queuedMessages.count, 1)
+        let (rc2, out2, _) = await hook(fixture(["hook_event_name": "Stop", "stop_hook_active": false]))
+        XCTAssertEqual(rc2, 0)
+        XCTAssertEqual(out2, "{\"decision\":\"block\",\"reason\":\"The user queued this message in AgentBar while you were working:\\n\\nplease also run \\\"swift test\\\"\"}")
+        XCTAssertTrue(store.sessions.first?.queuedMessages.isEmpty ?? false)
+        let (_, out3, _) = await hook(fixture(["hook_event_name": "Stop"]))
+        XCTAssertEqual(out3, "", "nothing left to deliver")
     }
 
     // MARK: real Claude Code run (opt-in). AB_REAL_CLAUDE=<allow|deny|always|timeout> AB_REAL_OUT=<scratch dir>

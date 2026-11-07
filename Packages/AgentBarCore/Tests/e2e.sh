@@ -243,12 +243,48 @@ check "shared socket removed on stop" "no" "$([ -e "$AS/agentbar.sock" ] && echo
 check "token.agent removed on stop" "no" "$([ -e "$AS/token.agent" ] && echo yes || echo no)"
 rm -rf "$AD" "$AS" "$AH"
 
+# --- Phase 12: a message queued in the panel comes back on stdout of the session's next Stop hook ---
+hookreal() { AGENTBAR_DIR="$D" "$CLI" hook --adapter claudeReal; }
+echo '{"hook_event_name":"SessionStart","session_id":"q1","cwd":"/tmp/qproj"}' | hookreal; check "queue: SessionStart hook exit" 0 $?
+printf 'queue q1 please also run "swift test"' > "$D/cmd.txt"
+wait_state queued 1; check "queue: message waiting" 1 "$(state queued)"
+OUT=$(echo '{"hook_event_name":"Stop","session_id":"q1","stop_hook_active":true}' | hookreal); RC=$?
+check "queue: continuation Stop (stop_hook_active) prints nothing" "0:" "$RC:$OUT"
+check "queue: still waiting after continuation Stop" 1 "$(state queued)"
+OUT=$(echo '{"hook_event_name":"SubagentStop","session_id":"q1"}' | hookreal); check "queue: SubagentStop prints nothing" "" "$OUT"
+OUT=$(echo '{"hook_event_name":"Stop","session_id":"q1","stop_hook_active":false}' | hookreal); RC=$?
+check "queue: Stop exit 0" 0 $RC
+check "queue: Stop output is block + reason" "block|The user queued this message in AgentBar while you were working:
+
+please also run \"swift test\"" "$(python3 -c 'import sys,json;d=json.loads(sys.argv[1]);print(d["decision"]+"|"+d["reason"]);assert set(d)=={"decision","reason"}' "$OUT")"
+wait_state queued 0; check "queue: delivered once, queue empty" 0 "$(state queued)"
+OUT=$(echo '{"hook_event_name":"Stop","session_id":"q1"}' | hookreal); check "queue: second Stop prints nothing" "" "$OUT"
+# a Stop that the app does not answer in time (hung server) stays silent and short (<= 2 s wait, not the old 5 s)
+HUNG2="/tmp/abe-$$-hung2"; mkdir -p "$HUNG2"; echo "tok" > "$HUNG2/token"
+python3 -I - "$HUNG2" <<'PY' &
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1] + "/agentbar.sock"); s.listen(8)
+conns = []
+end = time.time() + 15
+s.settimeout(1)
+while time.time() < end:
+    try: conns.append(s.accept()[0])
+    except OSError: pass
+PY
+HUNG2PID=$!; disown $HUNG2PID; sleep 0.5
+T0=$(date +%s); OUT=$(echo '{"hook_event_name":"Stop","session_id":"q1"}' | AGENTBAR_DIR="$HUNG2" "$CLI" hook --adapter claudeReal 2>&1); RC=$?; T1=$(date +%s)
+check "queue: unanswered Stop silent exit 0" "0:" "$RC:$OUT"
+check "queue: unanswered Stop bounded (<=3s)" yes "$([ $((T1-T0)) -le 3 ] && echo yes || echo no)"
+kill $HUNG2PID 2>/dev/null; rm -rf "$HUNG2"
+
 # graceful stop removes socket + token; hook afterwards is silent
 kill "$HOSTPID"; wait "$HOSTPID" 2>/dev/null; HOSTPID=""
 check "socket removed on stop" "no" "$([ -e "$D/agentbar.sock" ] && echo yes || echo no)"
 check "token removed on stop" "no" "$([ -e "$D/token" ] && echo yes || echo no)"
 OUT=$(echo '{"session_id":"a","tool_name":"Bash"}' | "$CLI" hook --adapter claudeCode 2>&1); RC=$?
 check "hook after stop silent" "0:" "$RC:$OUT"
+OUT=$(echo '{"hook_event_name":"Stop","session_id":"q1"}' | "$CLI" hook --adapter claudeReal 2>&1); RC=$?
+check "Stop hook without app silent exit 0" "0:" "$RC:$OUT"
 
 echo; echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
