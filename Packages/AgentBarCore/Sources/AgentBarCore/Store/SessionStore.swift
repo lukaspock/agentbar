@@ -56,6 +56,9 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
     public static let maxListedSessions = 20
 
     private var endedAt: [String: Date] = [:]
+    /// Origins recorded by the transport before the session exists (claim happens before the first event is applied).
+    private var pendingOrigins: [String: PeerRole] = [:]
+    static let maxPendingOrigins = 500
     private var maintenance: Task<Void, Never>?
     private let now: @MainActor () -> Date
 
@@ -89,6 +92,19 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
             }
         }
         if sessions.count != before { endedAt = endedAt.filter { k, _ in sessions.contains { $0.id == k } } }
+    }
+
+    /// Records which role a session came from (called by the transport only). An agent claim never overrides an owner
+    /// origin; an owner takeover of an agent session drops any directory (it was never set by the agent, belt and braces).
+    public func setOrigin(_ role: PeerRole, for rawId: String) {
+        let id = rawId.capped(AgentBarLimits.maxIdLength)
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else {
+            if pendingOrigins[id] != nil || pendingOrigins.count < Self.maxPendingOrigins { pendingOrigins[id] = role }
+            return
+        }
+        if role == .agent && sessions[i].originRole == .owner { return }
+        if role == .owner && sessions[i].originRole == .agent { sessions[i].workingDirectory = nil }
+        sessions[i].originRole = role
     }
 
     // MARK: Events
@@ -127,6 +143,7 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
             touch(i)
         case let .sessionDirectory(id, path):
             guard Self.isPlainAbsolutePath(path), let i = ensureSession(id) else { return }
+            if sessions[i].originRole == .agent { return }   // never trust a directory from the agent user
             sessions[i].workingDirectory = path   // no touch(): metadata only, must not reorder or wake the list
         case let .sessionEnd(id):
             guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
@@ -264,7 +281,8 @@ public final class SessionStore: ObservableObject, SessionStoreReading, Response
             sessions.removeAll { $0.id == victim.id }
             endedAt[victim.id] = nil
         }
-        sessions.append(AgentSession(id: id, name: id.capped(AgentBarLimits.maxNameLength), kind: .genericCLI))
+        sessions.append(AgentSession(id: id, name: id.capped(AgentBarLimits.maxNameLength), kind: .genericCLI,
+                                     originRole: pendingOrigins.removeValue(forKey: id)))
         return sessions.count - 1
     }
 

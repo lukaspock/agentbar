@@ -63,11 +63,15 @@ public struct AgentSession: Codable, Sendable, Identifiable, Hashable {
     /// Absolute working directory the agent reported (hook `cwd`); additive, nil when unknown. Used only for
     /// "Continue in panel" (the fork starts there); it is validated again when a process is started.
     public var workingDirectory: String?
+    /// Which transport role created/last claimed this session (set by the transport only; nil = unknown, e.g. chat, demo or
+    /// data from an older version). "Continue in panel" requires `.owner`: a session of the agent user must never make the
+    /// owner start a process in a directory the agent chose.
+    public var originRole: PeerRole?
     public init(id: String, name: String, kind: AgentKind, state: SessionState = .idle,
                 currentAction: String? = nil, pendingRequests: [AgentRequest] = [],
                 history: [HistoryEntry] = [], updatedAt: Date = Date(), supportsStop: Bool = false,
-                workingDirectory: String? = nil) {
-        self.workingDirectory = workingDirectory
+                workingDirectory: String? = nil, originRole: PeerRole? = nil) {
+        self.workingDirectory = workingDirectory; self.originRole = originRole
         self.id = id; self.name = name; self.kind = kind; self.state = state
         self.currentAction = currentAction; self.pendingRequests = pendingRequests
         self.history = history; self.updatedAt = updatedAt; self.supportsStop = supportsStop

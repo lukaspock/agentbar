@@ -415,3 +415,50 @@ final class ChatAliasReservationTests: XCTestCase {
         XCTAssertFalse(store.isChatOwned("cli-uuid")); XCTAssertFalse(store.isChatOwned("c1"))
     }
 }
+
+/// Adapter that reports a cwd as metadata like ClaudeCodeAdapter does.
+private struct CwdAdapter: AgentAdapter {
+    var kind: AgentKind { .claudeCode }
+    func translate(payload: Data) throws -> [CoreEvent] {
+        let o = try JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        return [.sessionUpdate(id: o?["s"] as? String ?? "?", name: "n", kind: .claudeCode, state: .working, action: nil, supportsStop: nil)]
+    }
+    func metadataEvents(payload: Data) -> [CoreEvent] {
+        let o = try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        return [.sessionDirectory(id: o?["s"] as? String ?? "?", path: o?["cwd"] as? String ?? "/x")]
+    }
+    func encode(response: AgentResponse, for request: AgentRequest) -> Data { Data() }
+}
+
+@MainActor
+final class ContinueOriginTransportTests: XCTestCase {
+    func testAgentCwdIgnoredOwnerCwdAcceptedAndOriginsRecorded() async throws {
+        let ownerUid = geteuid() + 1, agentUid = geteuid()
+        let base = URL(fileURLWithPath: "/tmp/abo-\(UInt32.random(in: 0..<UInt32.max))")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = SessionStore()
+        let peer = FakePeer(uid: agentUid)
+        let sec = TransportSecurity(ownerUid: ownerUid, agentUid: agentUid, sharedDirectory: base.appendingPathComponent("shared"),
+                                    sharedGid: getgid(), peerCredentials: peer.credentials)
+        let server = TransportServer(store: store, adapters: ["claudeCode": CwdAdapter()], directory: base.appendingPathComponent("owner"), security: sec)
+        try server.start(); defer { server.stop() }
+        func call(_ role: PeerRole, _ rest: String) async {
+            peer.set(role == .agent ? agentUid : ownerUid)
+            let tok = role == .agent ? server.agentTokenForTests : server.tokenForTests
+            let path = server.sharedSocketPath!
+            _ = await detached { () -> String? in
+                guard let c = RawClient(path: path) else { return nil }
+                defer { c.close_() }
+                c.send("{\"token\":\"\(tok)\",\(rest)}\n"); return c.readLine()
+            }
+        }
+        await call(.agent, "\"op\":\"payload\",\"adapter\":\"claudeCode\",\"payload\":{\"s\":\"ag-1\",\"cwd\":\"/tmp/evil\"}")
+        await call(.owner, "\"op\":\"payload\",\"adapter\":\"claudeCode\",\"payload\":{\"s\":\"ow-1\",\"cwd\":\"/tmp/fine\"}")
+        let ag = store.sessions.first { $0.id == "ag-1" }, ow = store.sessions.first { $0.id == "ow-1" }
+        XCTAssertNotNil(ag); XCTAssertNil(ag?.workingDirectory); XCTAssertEqual(ag?.originRole, .agent)
+        XCTAssertEqual(ow?.workingDirectory, "/tmp/fine"); XCTAssertEqual(ow?.originRole, .owner)
+        XCTAssertFalse(ag?.canContinueInPanel ?? true)
+        XCTAssertTrue(ow?.canContinueInPanel ?? false)
+    }
+}

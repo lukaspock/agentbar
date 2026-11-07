@@ -567,7 +567,9 @@ public final class TransportServer: @unchecked Sendable {
             return Self.error("invalid payload")
         }
         guard let translated = try? adapter.translate(payload: data) else { return Self.error("invalid payload") }
-        let events = translated + adapter.metadataEvents(payload: data)
+        // Metadata (the hook cwd) is trusted only from the owner role: a directory chosen by the agent user must never become
+        // the start directory of an owner process ("Continue in panel").
+        let events = translated + (role == .owner ? adapter.metadataEvents(payload: data) : [])
         let touched = Set(events.compactMap { ev -> String? in
             switch ev {
             case .sessionUpdate(let id, _, _, _, _, _): return id

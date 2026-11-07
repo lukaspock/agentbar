@@ -31,9 +31,10 @@ public struct ChatResume: Sendable, Equatable {
 
 public extension AgentSession {
     /// "Continue in panel" is offered only for Claude Code hook sessions with a valid claude session id and a known
-    /// absolute working directory (the fork must start where the transcript lives).
+    /// absolute working directory (the fork must start where the transcript lives) AND only when the session came from the
+    /// owner role. Agent-user and unknown origins never qualify (the backend re-checks; see `ContinueInPanelCheck`).
     var canContinueInPanel: Bool {
-        kind == .claudeCode && ChatResume.isValidSessionId(id) && (workingDirectory?.hasPrefix("/") ?? false)
+        originRole == .owner && kind == .claudeCode && ChatResume.isValidSessionId(id) && (workingDirectory?.hasPrefix("/") ?? false)
     }
 }
 

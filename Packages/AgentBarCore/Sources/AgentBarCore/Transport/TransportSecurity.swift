@@ -1,7 +1,7 @@
 import Foundation
 
 /// Who is on the other end of a connection. Decided by the kernel-reported peer uid (getpeereid), never by anything the peer sends.
-public enum PeerRole: String, Sendable, Hashable, CaseIterable {
+public enum PeerRole: String, Codable, Sendable, Hashable, CaseIterable {
     /// The user running AgentBar. Full access.
     case owner
     /// The separate macOS user (e.g. `agentbar`) that runs agents. Hook/session ops only, and only on sessions it created itself.
@@ -128,6 +128,8 @@ final class SessionOrigins: @unchecked Sendable {
         } else {
             for id in ids where entries[id] != nil || entries.count < Self.maxEntries { entries[id] = Entry(role: .owner, at: now) }
         }
+        // Durable per-session origin in the store (the side table above is pruned): the UI and the backend gate on it.
+        for id in ids { store.setOrigin(role, for: id) }
         return nil
     }
 

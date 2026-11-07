@@ -130,7 +130,7 @@ final class FakeSessionStore: SessionStoreReading, ResponseSink {
                         h(200, .status, "Claude: The panel frame is recomputed on every screen change; I would debounce it."),
                         h(120, .answer, "You: Go ahead and fix it, then run the tests."),
                         h(60, .action, "Edited NotchWindow.swift"),
-                        h(20, .status, "Claude needs your attention")], workingDirectory: "/Users/demo/Projects/notchy-app"),
+                        h(20, .status, "Claude needs your attention")], workingDirectory: "/Users/demo/Projects/notchy-app", originRole: .owner),
                     AgentSession(id: "m", name: "Browser Agent", kind: .computerUse, state: .working,
                                  currentAction: "Clicking the \"Submit\" button in Safari", supportsStop: true),
                     AgentSession(id: "b", name: "api-server", kind: .codex, state: .idle)]

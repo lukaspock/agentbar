@@ -52,17 +52,24 @@ final class LiveChatBackend: ChatBackend {
     /// itself is not touched; failures become an error entry in the source session.
     func continueInPanel(from session: AgentSession, completion: @escaping (Result<String, Error>) -> Void) {
         func fail(_ message: String) {
-            store.apply(.log(sessionId: session.id, entry: HistoryEntry(kind: .error, text: "Continue in panel failed: " + message)))
+            store.apply(.log(sessionId: session.id, entry: HistoryEntry(kind: .error, text: message.hasPrefix("Cannot continue") ? message : "Continue in panel failed: " + message)))
             completion(.failure(StartError(message: message)))
         }
-        guard session.canContinueInPanel, let cwd = session.workingDirectory else {
-            fail("This session has no usable id or working directory."); return
+        // Never trust the snapshot the UI passed: re-read the session from the store (origin, id, directory) and re-validate
+        // everything here. Only sessions that came from the OWNER role qualify; the directory is realpath-resolved and vetted.
+        guard let current = store.sessions.first(where: { $0.id == session.id }) else {
+            fail("Cannot continue: the session no longer exists."); return
+        }
+        let cwdURL: URL
+        switch ContinueInPanelCheck.validate(session: current) {
+        case .failure(let f): fail(f.message); return
+        case .success(let u): cwdURL = u
         }
         guard let claude = ChatConfig.locateClaude() else {
             fail("The claude CLI was not found (~/.local/bin, /opt/homebrew/bin, /usr/local/bin)."); return
         }
         let base = String(session.name.prefix(AgentBarLimits.maxNameLength - 7))
-        let config = ChatConfig(executable: claude, workingDirectory: URL(fileURLWithPath: cwd, isDirectory: true),
+        let config = ChatConfig(executable: claude, workingDirectory: cwdURL,
                                 name: base + " (fork)",
                                 resume: ChatResume(sessionId: session.id, sourceName: session.name))
         let chat = ChatSession(config: config, store: store)
