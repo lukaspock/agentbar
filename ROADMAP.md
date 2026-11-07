@@ -7,7 +7,7 @@ Rolle beim Weiterarbeiten: Coordinator/Product Owner, der Code delegiert; Berich
 ## Status
 **Phase 1 (MVP): gebaut, nachgeprüft, vom User am Notch teilweise handgetestet.**
 - Kern/Transport (`Packages/AgentBarCore`): Store, Unix-Socket mit Token, CLI `agentbar` (update/ask/log/end/remove/hook).
-- ClaudeCode-Adapter + "Hooks einrichten…" (Diff-Vorschau, Backup, Bestätigung).
+- ClaudeCode-Adapter + "Set Up Hooks…" (Diff-Vorschau, Backup, Bestätigung).
 - UI: Blob-Figuren (freundliche Statusfigur), Hover-Panel, Notch/Pille/Kreis, Antwortfeld, Stopp-Knopf.
 - Agents entfernen: Kreuz pro Zeile, "Wirklich?"-Bestätigung bei aktiven, "Erledigte entfernen", CLI `agentbar remove`.
 - Zahlen zuletzt: `swift test` 68 grün (1 übersprungen), `Tests/e2e.sh` 51/51, App-Build ohne Swift-Warnungen.
@@ -16,7 +16,7 @@ Rolle beim Weiterarbeiten: Coordinator/Product Owner, der Code delegiert; Berich
 
 ## Offene Punkte aus Phase 1 (zuerst erledigen)
 1. **Echter Claude-Code-Lauf:** scheiterte an abgelaufenem `claude`-Login. Nach Login:
-   `AB_REAL_CLAUDE=allow|deny|timeout AB_REAL_OUT=<dir> swift test --filter testRealClaudeRun`, dann "Hooks einrichten…" in der App.
+   `AB_REAL_CLAUDE=allow|deny|timeout AB_REAL_OUT=<dir> swift test --filter testRealClaudeRun`, dann "Set Up Hooks…" in der App.
    Zu verifizieren: PermissionRequest-Payload, `permission_suggestions` + "Immer erlauben" (`updatedPermissions`), Timeout-Fallthrough,
    Race zwischen Terminal-Antwort und wartendem Hook, Live-Reload der Hook-Config. Ergebnis in `Docs/research/e2e-claudecode.md` nachtragen.
 2. **UI ungetestet:** Pille und Kreis (Ziehen, Position merken), Klick-Durchlass der transparenten Fläche, Augen-Verfolgung der Maus,
@@ -64,7 +64,7 @@ Demo ohne echte Agents: `AgentBar --demo`, `--demo-state idle|working|needsInput
 `--presentation notch|pill|circle`. Debug: `AGENTBAR_DEBUG_HOVER=1`, `AGENTBAR_DIR=<kurzer Pfad>` (Socket-Pfad max. ~104 Zeichen),
 DEBUG-Flag `--auto-answer <optionId>`.
 Testregeln: vor jedem Neustart `pkill AgentBar`; läuft Notchy, zeichnet es über die Notch-Variante (Fensteraufnahmen nutzen oder Notchy beenden);
-nichts an `~/.claude` ändern außer über "Hooks einrichten…" nach Bestätigung; Maus nur bewegen wenn nötig und vorher ansagen.
+nichts an `~/.claude` ändern außer über "Set Up Hooks…" nach Bestätigung; Maus nur bewegen wenn nötig und vorher ansagen.
 
 ## Dateibesitz (Subagent-Aufträge disjunkt halten)
 `Contract/` = nur Coordinator (zuletzt additiv erweitert um `ResponseSink.remove`). Store/Transport/CLI/Tests = Core-Agent.

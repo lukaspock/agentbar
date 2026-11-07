@@ -1,7 +1,7 @@
 import AppKit
 import AgentBarCore
 
-/// Menu entry "Hooks einrichten…": shows the diff preview and writes only after the user presses "Einrichten".
+/// Menu entry "Set Up Hooks…": shows the diff preview and writes only after the user presses "Set Up".
 /// Wire-up (coordinator): `AppHooks.menuItemFactories.append(HookSetupMenu.menuItemFactory)`.
 @MainActor
 final class HookSetupMenu: NSObject {

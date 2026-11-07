@@ -1,7 +1,7 @@
 import AppKit
 import AgentBarCore
 
-/// Menu entry "Codex-Hooks einrichten…": shows the diff preview and writes only after the user presses "Einrichten".
+/// Menu entry "Set Up Codex Hooks…": shows the diff preview and writes only after the user presses "Set Up".
 /// Wire-up (coordinator): `AppHooks.menuItemFactories.append(CodexHookSetupMenu.menuItemFactory)`.
 @MainActor
 final class CodexHookSetupMenu: NSObject {

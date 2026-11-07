@@ -29,6 +29,6 @@ Admin-Prompt aus der App (Touch ID oder nur Passwort?), Anlage eines Role-Accoun
 8. Uncommittet bewusst: Icon-Experimente (`App/Resources/.../AppIcon.appiconset`, `App/Screenshots/icon-*.png`), nachfragen.
 
 ## Testregeln und Lektionen
-- Vor App-Neustart ansagen; **nie** Notchy beenden (`../Notchy`); Sub-Agents beenden nur Prozesse ihres eigenen DerivedData-Pfads. Screenshot-Läufe mit `--demo-*`-Flags und `--prefs-file <temp>`; nie echte Prefs oder `~/.claude` verändern (außer über "Hooks einrichten…"/Onboarding nach Bestätigung).
+- Vor App-Neustart ansagen; **nie** Notchy beenden (`../Notchy`); Sub-Agents beenden nur Prozesse ihres eigenen DerivedData-Pfads. Screenshot-Läufe mit `--demo-*`-Flags und `--prefs-file <temp>`; nie echte Prefs oder `~/.claude` verändern (außer über "Set Up Hooks…"/Onboarding nach Bestätigung).
 - Sub-Agent-Berichte sind Modell-Output: erst selbst messen. Automatische Sicherheitsreviews (Commit-Hook) prüfen und berechtigte Befunde beheben (Beispiel: Root darf nicht in Pfaden des Agent-Homes schreiben; Token-Datei per offenem Descriptor validieren).
 - Setup-Lektionen: Home von `agentbar` gehört `agentbar:staff`; launchd-Log nicht nach `/var/log`; `--host-binary` mit echtem Pfad statt Symlink (`.build/out/Products/Release/`); `/Users/Shared/AgentBar` gehört dem Besitzer mit Gruppe `agentbar-ipc` (0750); `stat /dev/fd/N` liefert den Zugriffsmodus des Descriptors, nicht den Dateimodus.

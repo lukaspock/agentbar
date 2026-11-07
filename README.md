@@ -16,6 +16,37 @@ computer-use agents are planned (see [ROADMAP.md](ROADMAP.md)).
 
 Status: early MVP (Phase 1). Real Claude Code permission flows are not yet verified end to end, see the roadmap.
 
+## First run: onboarding
+On the first start AgentBar opens a setup window (4 pages: Welcome, Login, Setting things up, You're all set). It can be
+reopened any time from the menu bar icon via "Setup…".
+
+<table>
+  <tr>
+    <td align="center"><img src="App/Screenshots/onboarding-welcome.png" width="260" alt="Onboarding welcome page"><br><sub>Welcome</sub></td>
+    <td align="center"><img src="App/Screenshots/onboarding-setup.png" width="260" alt="Onboarding setup page, in progress"><br><sub>Setting things up</sub></td>
+    <td align="center"><img src="App/Screenshots/onboarding-done.png" width="260" alt="Onboarding finished page"><br><sub>You're all set</sub></td>
+  </tr>
+</table>
+
+- **Claude login in the browser:** the app runs `claude setup-token` for you; you approve in the browser (or paste a token).
+  The token is never shown in the window.
+- **One admin password prompt** (a single macOS dialog) creates the separate agent user, the background helper and the
+  `agentbar` command. No Terminal and no `sudo` needed.
+- **Local only, no admin:** switch off "Use a separate agent user" on the welcome page. Agents then run as you, no password
+  prompt, only the hooks are set up.
+- **Existing `agentbar` account:** it is adopted and hardened best effort, its UID is not changed. A newly created account is a
+  hidden role account with UID 200..399 and shell `/usr/bin/false`.
+- The old manual route (`sudo Scripts/setup-agent-user.sh`) still works by hand, see `--dry-run`.
+
+Not yet verified on a real system: the admin run from the app (password dialog, whether Touch ID is offered), the real
+`claude setup-token` flow, creating or adopting the account in the app context, and Codex hooks. Treat the onboarding as
+untested until the roadmap says otherwise.
+
+## Session chat
+Every session shows up as a chat with speech bubbles in the panel. Sessions started by hooks (a `claude` running in your
+terminal) are read-only and show "Reply in the terminal". "Continue in panel" (fork the session into the panel) is planned,
+not available yet.
+
 ## Screenshots
 
 <table>
@@ -37,10 +68,10 @@ Try it without any agent: run the app with `--demo`. With the app running, use t
 `agentbar ask --session t --type approval --text "ok?" --option allow:Yes --option deny:No --timeout 60 --default deny`.
 
 ## Claude Code hooks
-Menu bar icon → "Hooks einrichten…" shows a diff preview of the changes to `~/.claude/settings.json`, writes a backup, and only
+The onboarding sets up the hooks for you. They can also be managed later: menu bar icon → "Set Up Hooks…" shows a diff preview of the changes to `~/.claude/settings.json`, writes a backup, and only
 applies after your confirmation. Timeouts and errors never auto-allow: Claude Code falls back to its own dialog.
 
-> **Hinweis:** Die Hooks speichern den absoluten Pfad zur mitgelieferten CLI (`AgentBar.app/Contents/Resources/agentbar`). Wird die App verschoben oder umbenannt (z. B. vom Build-Ordner nach `~/Desktop` oder `/Applications`), muss im Menüleisten-Icon erneut "Hooks einrichten…" ausgeführt werden.
+> **Note:** The hooks store the absolute path to the bundled CLI (`AgentBar.app/Contents/Resources/agentbar`). If the app is moved or renamed (e.g. from the build folder to `~/Desktop` or `/Applications`), run "Set Up Hooks…" from the menu bar icon again.
 
 ## Docs
 [CONTRACTS.md](CONTRACTS.md) (architecture, wire protocol), [Docs/research](Docs/research), [ROADMAP.md](ROADMAP.md).

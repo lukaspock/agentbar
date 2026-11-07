@@ -9,7 +9,7 @@ Agents (zuerst `claude`, später Codex) laufen unter einem nicht-admin Benutzer 
 - **Login:** Langzeit-Token (`claude setup-token`, 1 Jahr gültig, Pro/Max/Team nötig, gilt nur für Modellanfragen). Der Host setzt ihn als `CLAUDE_CODE_OAUTH_TOKEN`. Nicht zusammen mit `ANTHROPIC_API_KEY` setzen. Token liegt nur für den Agent-Benutzer lesbar (0600, Home 700), nie in der App-Config des Besitzers.
 - **Workspaces:** Nur über die Bar. Ordner unter `/Users/agentbar/work`, nur der Agent-Benutzer liest sie. Nicht unter `~/Documents` (TCC).
 - **App-Neustart:** Agents werden gestoppt (Dead-Man im Host nach kurzer Frist, z. B. 20 s ohne Verbindung). Kein Re-Attach im MVP.
-- **Admin-Setup:** Per Script, das der User selbst prüft und mit sudo startet. Ich führe nichts davon aus.
+- **Admin-Setup:** Ursprünglich per Script, das der User selbst prüft und mit sudo startet. **Überholt (2026-11-05):** Der Standardweg ist das Onboarding-Fenster (ein Passwortdialog, siehe "Admin-Installer" unten); das Script bleibt für den Handbetrieb.
 
 ## Architektur
 ```
@@ -42,10 +42,11 @@ Der Host schreibt `~/.claude/settings.json` **des Agent-Benutzers** über `HookS
 - Menü "Agent-Benutzer…" (Status Host, Einrichten, Hooks).
 - Optional additives `AgentSession.runsAs` (Contract ist FROZEN, nur Coordinator).
 
-## Admin-Setup (Script, vom User ausgeführt)
+## Admin-Setup (Script, vom User ausgeführt) - Handbetrieb, ersetzt durch das Onboarding
+Aktuell: Onboarding-Fenster beim ersten Start oder Menü "Setup…"; ein Passwortdialog, Claude-Login im Browser, "Nur lokal" ohne Admin möglich. Die Liste unten ist der ursprüngliche Plan (u. a. "Re-Login nötig" entfällt, die Gruppe sitzt am Verzeichnis `/Users/Shared/AgentBar`).
 `Scripts/setup-agent-user.sh` (idempotent, mit `--dry-run`):
 1. `sysadminctl -addUser agentbar` ohne `-admin`; verstecken mit `dscl . -create /Users/agentbar IsHidden 1`; Home 700; auch dein Home 700 prüfen.
-2. Gruppe `agentbar-ipc` anlegen, Besitzer eintragen (Re-Login nötig).
+2. Gruppe `agentbar-ipc` anlegen, Besitzer eintragen (ursprünglich Re-Login nötig, durch Gruppenvererbung am Verzeichnis entfallen).
 3. `/Users/Shared/AgentBar` mit Modus/Gruppe, `/Users/agentbar/work`, CLI nach `/usr/local/bin`, Host-Binary root-eigen.
 4. LaunchDaemon-plist (`UserName`, `GroupName`, `HOME`, `PATH` inkl. `~/.local/bin` explizit), `launchctl bootstrap`.
 5. Token-Hinterlegung: `sudo -u agentbar` schreibt den Token in eine 0600-Datei. Der Token wird nie auf der Kommandozeile oder im Chat übergeben.

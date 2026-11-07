@@ -18,7 +18,7 @@ Legt einen Probe-Benutzer an und löscht ihn gleich wieder. Dein Account wird ni
 ```bash
 sudo dscl . -create /Users/zzprobe && sudo dscl . -create /Users/zzprobe UserShell /usr/bin/false && echo CREATE_OK; sudo dscl . -delete /Users/zzprobe && echo DELETE_OK
 ```
-- Beides OK: Anlegen geht im Terminal. Problem liegt am Aufruf aus der App oder am Ändern der UID eines bestehenden Accounts (siehe `Docs/research/dscl-permission.md`, falls vorhanden).
+- Beides OK: Anlegen geht im Terminal. Problem liegt am Aufruf aus der App oder am Ändern der UID eines bestehenden Accounts (siehe `Docs/research/dscl-permission.md`).
 - `eDSPermissionError`: Terminal braucht evtl. "Vollständigen Festplattenzugriff" (Systemeinstellungen → Datenschutz & Sicherheit).
 
 Zusatz (optional, Terminal): Kann root den UID-Wert eines Probe-Accounts ändern?
